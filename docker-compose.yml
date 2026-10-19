@@ -1,8 +1,5 @@
 services:
   orgasmus-tracker:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: ghcr.io/nilsee1/orgasmustracker:latest
     container_name: orgasmus-tracker-bot
     restart: unless-stopped

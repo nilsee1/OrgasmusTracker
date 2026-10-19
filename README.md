@@ -119,7 +119,7 @@ chmod 777 data
 Starte den Bot im Hintergrund:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 ### 3. Logs einsehen & Status prüfen
