@@ -6,7 +6,7 @@ services:
     env_file:
       - .env
     environment:
-      - PYTHONPATH=/app
+      - RUST_LOG=info
       - TZ=${TZ:-Europe/Berlin}
       - DB_PATH=/app/data/tracker.db
     volumes:

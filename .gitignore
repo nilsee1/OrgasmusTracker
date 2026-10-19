@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Rust
+/target/
+
+
 # Environments
 .venv/
 venv/

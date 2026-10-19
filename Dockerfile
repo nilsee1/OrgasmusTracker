@@ -1,15 +1,26 @@
 # ==============================================================================
-# Production Dockerfile for Telegram Orgasmus-Tracker Bot
-# Uses Python 3.12 slim, runs as non-root user, and mounts persistent SQLite data
+# Production Dockerfile for Telegram Orgasmus-Tracker Bot (Rust)
+# Multi-stage build, minimal Debian slim runtime, runs as non-root user
 # ==============================================================================
 
-FROM python:3.12-slim
+# Build stage
+FROM rust:1-slim AS builder
 
-# Set Python environment flags
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app \
-    TZ=Europe/Berlin
+WORKDIR /usr/src/app
+
+# Cache dependency compilation
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs && echo "" > src/lib.rs
+RUN cargo build --release && rm -rf src
+
+# Copy real source code and build production binary
+COPY src ./src
+RUN touch src/main.rs src/lib.rs && cargo build --release
+
+# Runtime stage
+FROM debian:12-slim
+
+ENV TZ=Europe/Berlin
 
 # Install security certificates and timezone data
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,16 +35,12 @@ RUN groupadd -g 10001 appgroup && \
 # Set working directory
 WORKDIR /app
 
-# Install dependencies first for Docker layer caching
-COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
-
 # Create persistent data directory and set permissions
 RUN mkdir -p /app/data && \
     chown -R appuser:appgroup /app
 
-# Copy application source code
-COPY --chown=appuser:appgroup src/ /app/src/
+# Copy compiled binary from builder
+COPY --from=builder --chown=appuser:appgroup /usr/src/app/target/release/orgasmus-tracker /app/orgasmus-tracker
 
 # Switch to non-root user
 USER appuser
@@ -42,5 +49,4 @@ USER appuser
 VOLUME ["/app/data"]
 
 # Run the Telegram bot
-CMD ["python", "-m", "src.bot"]
-
+CMD ["/app/orgasmus-tracker"]

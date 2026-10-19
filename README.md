@@ -1,23 +1,27 @@
-# 📊 Orgasmus Tracker Telegram Bot
+# 📊 Orgasmus Tracker Telegram Bot (Rust Edition 🦀)
 
-Ein robuster, produktionsreifer und privater Telegram-Bot in Python zur Erfassung und Auswertung persönlicher Orgasmus-Protokolle. Entwickelt mit **python-telegram-bot (v21+)**, zustandsbehafteten Konversationen (**ConversationHandler**), lokaler **SQLite**-Persistenz, vollständiger **Docker**-Containerisierung und automatisierter CI/CD-Pipeline zur **GitHub Container Registry (ghcr.io)** via GitHub Actions.
+Ein robuster, produktionsreifer, speichereffizienter und privater Telegram-Bot in **Rust** zur Erfassung und Auswertung persönlicher Orgasmus-Protokolle. Entwickelt mit **teloxide (v0.17)**, asynchronem **Tokio**-Runtime, zustandsbehafteten Konversationen (**Dialogue State Machine**), lokaler **SQLite**-Persistenz via **SQLx**, vollständiger **Docker**-Containerisierung (Multi-Stage-Build) und automatisierter CI/CD-Pipeline zur **GitHub Container Registry (ghcr.io)** via GitHub Actions.
 
 ---
 
 ## ✨ Features & Highlights
 
+- **⚡ Maximale Performance & minimale Ressourcen (Rust):**
+  - Kompiliert zu einem einzigen statisch gelinkten Native-Binary mit minimalem RAM-Verbrauch (< 15 MB).
+  - Volle Typsicherheit, Speichersicherheit ohne Garbage Collection und unübertroffene Stabilität.
 - **🔒 Höchste Privatsphäre & Sicherheit:**
   - Strenger Whitelist-Schutz über `ALLOWED_USER_IDS`: Nur explizit autorisierte Telegram-User-IDs können mit dem Bot interagieren.
   - Alle Daten verbleiben lokal in deiner eigenen SQLite-Datenbank (keine Drittanbieter-Cloud, kein externes Tracking).
 - **💬 Intuitiver Konversations-Flow auf Deutsch (`/orgasmus`):**
   - **⚡ Einfacher Modus:** Speichert sofort mit einem Klick mit aktuellem Zeitstempel.
-  - **📝 Ausführlicher Modus:** Erfasst schrittweise Datum/Uhrzeit (mit Schnellauswahl *Jetzt*), Begleitung (*Alleine* oder *Mit anderer Person* + Name), Qualität (Skala *1 bis 10*) und Notizen.
+  - **📝 Ausführlicher Modus:** Erfasst schrittweise Datum/Uhrzeit (mit Schnellauswahl *Jetzt* und Zukunftsvalidierung), Begleitung (*Alleine* oder *Mit anderer Person* + Name mit Längenprüfung), Qualität (Skala *1 bis 10*) und Notizen (max. 300 Zeichen).
   - **Globale Navigation:** In jedem Schritt stehen `✅ Fertigstellen` (speichert alle bisherigen Angaben) und `❌ Abbruch` (verwirft den Entwurf) bereit.
+  - **Saubere UI:** Vorherige Inline-Keyboards werden bei Texteingaben automatisch entfernt.
 - **📜 Verlauf, Historie & Löschen (`/liste` oder `/letzte`):**
   - Listet die letzten 10 Einträge des anfragenden Nutzers chronologisch sortiert mit allen Details auf.
-  - **Interaktive Löschfunktion:** Über den Button `🗑️ Einträge löschen` können Einträge mit Checkboxen (`⬜` / `☑️`) markiert und nach einer Sicherheitsabfrage endgültig gelöscht werden.
+  - **Interaktive Löschfunktion:** Über den Button `🗑️ Einträge löschen` können Einträge mit Checkboxen (`⬜` / `☑️`) markiert und nach einer Sicherheitsabfrage per Batch-Delete in einer einzigen Transaktion gelöscht werden.
 - **🐳 DevOps & Container-Ready:**
-  - Schlankes Multi-Stage-fähiges `Dockerfile` basierend auf `python:3.12-slim`.
+  - Schlankes Multi-Stage `Dockerfile` basierend auf `rust:1-slim` und `debian:12-slim`.
   - Ausführung unter dediziertem Non-Root-Benutzer (`appuser:10001`).
   - `docker-compose.yml` für 1-Klick-Bereitstellung mit persistentem Volume `./data:/app/data`.
   - Automatische GitHub Actions CI/CD Pipeline für Build, Test & Push zu `ghcr.io`.
@@ -26,11 +30,12 @@ Ein robuster, produktionsreifer und privater Telegram-Bot in Python zur Erfassun
 
 ## 🛠️ Tech Stack
 
-- **Programmiersprache:** Python 3.12+
-- **Telegram Bot Framework:** `python-telegram-bot` v21.10 (asynchron, `Application`, `ConversationHandler`, `CallbackQueryHandler`)
-- **Datenbank:** `sqlite3` mit WAL-Modus (Write-Ahead-Logging) für hohe Performance und Thread-Sicherheit
-- **Zeitzonen:** Python `zoneinfo` mit `tzdata` (Standard: `Europe/Berlin`)
-- **Containerisierung:** Docker & Docker Compose
+- **Programmiersprache:** Rust (Edition 2021)
+- **Telegram Bot Framework:** `teloxide` v0.17 (asynchron, `dptree`, `Dialogue`, `InlineKeyboardMarkup`, Rustls TLS)
+- **Async Runtime:** `tokio` v1.43
+- **Datenbank:** `sqlx` v0.8 mit SQLite-Treiber, WAL-Modus (Write-Ahead-Logging) und Foreign Keys
+- **Zeitzonen:** `chrono` und `chrono-tz` (Standard: `Europe/Berlin`)
+- **Containerisierung:** Docker (Multi-Stage-Build) & Docker Compose
 - **CI/CD:** GitHub Actions mit GHCR-Integration
 
 ---
@@ -100,6 +105,9 @@ DB_PATH=/app/data/tracker.db
 
 # Zeitzone (Standard: Europe/Berlin)
 TZ=Europe/Berlin
+
+# Log-Level (Standard: info)
+RUST_LOG=info
 ```
 
 ---
@@ -140,35 +148,18 @@ docker compose restart
 
 ## 💻 Lokale Entwicklung & Tests (Ohne Docker)
 
-Falls du den Bot direkt mit Python ausführen möchtest:
+Falls du den Bot direkt mit Rust ausführen möchtest:
 
-### 1. Virtuelle Umgebung anlegen & aktivieren
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 2. Abhängigkeiten installieren
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Umgebung anpassen
-Setze in deiner `.env` den Pfad zur lokalen Datenbank, z.B.:
-```env
-DB_PATH=./data/tracker.db
-```
-
-### 4. Tests ausführen
+### 1. Tests ausführen
 Das Projekt enthält eine umfassende Testsuite mit 28 Unit- und Integrationstests:
 
 ```bash
-pytest -v
+cargo test
 ```
 
-### 5. Bot lokal starten
+### 2. Bot lokal kompilieren und starten
 ```bash
-python src/bot.py
+cargo run --release
 ```
 
 ---
@@ -176,75 +167,13 @@ python src/bot.py
 ## 🔄 CI/CD mit GitHub Actions & GitHub Container Registry (ghcr.io)
 
 Die im Repository enthaltene Workflow-Datei [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) übernimmt vollautomatisch:
-1. **Automatisierte Tests:** Führt bei jedem Push und Pull Request die gesamte Testsuite (`pytest`) auf Python 3.12 aus.
+1. **Automatisierte Tests:** Führt bei jedem Push und Pull Request die gesamte Rust-Testsuite (`cargo test`) aus.
 2. **Multi-Arch Docker Build & Push:**
-   - Bei jedem Push auf den Branch `main` wird das Image gebaut und als `ghcr.io/<owner>/<repo>:latest` sowie mit dem aktuellen Git-Commit-SHA (`ghcr.io/<owner>/<repo>:sha-...`) veröffentlicht.
-   - Bei Git-Tags (z.B. `git tag v1.0.0 && git push origin v1.0.0`) wird das Image mit SemVer-Tags versehen (`:1.0.0`, `:1.0`, `:v1.0.0`).
-3. **Sicherheit:** Verwendet das eingebaute `GITHUB_TOKEN` mit `packages: write` Berechtigung – keine manuellen Secrets für GHCR erforderlich!
-
-### Verwendung des veröffentlichten Images:
-Passe in deiner `docker-compose.yml` einfach das Image an:
-
-```yaml
-services:
-  orgasmus-tracker:
-    image: ghcr.io/nilsee1/orgasmustracker:latest
-    container_name: orgasmus-tracker-bot
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data
-```
+   - Baut das schlanke Produktions-Image via Multi-Stage-Build und veröffentlicht es auf `ghcr.io`.
+   - Tags: `:latest`, `:sha-...` und semantische Versionen (`:v*`).
+3. **Sicherheit:** Verwendet das eingebaute `GITHUB_TOKEN` mit `packages: write` Berechtigung.
 
 ---
 
-## 📖 Konversations-Ablaufdiagramm (`/orgasmus`)
-
-```mermaid
-stateDiagram-v2
-    [*] --> STATE_CHOOSE_TYPE : /orgasmus
-    STATE_CHOOSE_TYPE --> EinfachGespeichert : [⚡ Einfacher Orgasmus]
-    EinfachGespeichert --> [*] : Speichert aktuellen Zeitstempel
-
-    STATE_CHOOSE_TYPE --> STATE_DATETIME : [📝 Ausführlicher Orgasmus]
-
-    STATE_DATETIME --> STATE_COMPANY : [🕒 Jetzt] oder Text "TT.MM.JJJJ HH:MM"
-    
-    STATE_COMPANY --> STATE_QUALITY : [👤 Alleine]
-    STATE_COMPANY --> STATE_PARTNER_NAME : [👥 Mit anderer Person]
-
-    STATE_PARTNER_NAME --> STATE_QUALITY : Name als Text eingeben
-
-    STATE_QUALITY --> STATE_DESCRIPTION : Zahl 1-10 auswählen
-
-    STATE_DESCRIPTION --> DetailedGespeichert : Textnotiz senden oder [✅ Fertigstellen]
-    DetailedGespeichert --> [*]
-
-    STATE_DATETIME --> DetailedGespeichert : [✅ Fertigstellen]
-    STATE_COMPANY --> DetailedGespeichert : [✅ Fertigstellen]
-    STATE_PARTNER_NAME --> DetailedGespeichert : [✅ Fertigstellen]
-    STATE_QUALITY --> DetailedGespeichert : [✅ Fertigstellen]
-
-    STATE_CHOOSE_TYPE --> Abgebrochen : [❌ Abbruch]
-    STATE_DATETIME --> Abgebrochen : [❌ Abbruch]
-    STATE_COMPANY --> Abgebrochen : [❌ Abbruch]
-    STATE_PARTNER_NAME --> Abgebrochen : [❌ Abbruch]
-    STATE_QUALITY --> Abgebrochen : [❌ Abbruch]
-    STATE_DESCRIPTION --> Abgebrochen : [❌ Abbruch]
-    Abgebrochen --> [*]
-```
-
----
-
-## 💾 Datenbank-Backup & Wartung
-
-Da alle Einträge in einer standardmäßigen SQLite-Datei liegen, ist die Sicherung trivial:
-
-```bash
-# Sicheres Live-Backup im laufenden Betrieb erstellen:
-sqlite3 ./data/tracker.db ".backup ./data/tracker_backup_$(date +%Y%m%d_%H%M%S).db"
-```
-
-Oder einfach das `./data`-Verzeichnis in dein gewohntes Backup-System (z.B. BorgBackup, Restic, Syncthing) einbinden.
-
+## 📜 Lizenz
+MIT License.

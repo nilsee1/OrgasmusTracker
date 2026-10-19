@@ -1,14 +1,16 @@
-name: Build and Publish Docker Image to GHCR
+name: Build and Publish Docker Image to GHCR (Rust)
 
 on:
   push:
     branches:
       - main
+      - rust
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
+      - rust
 
 env:
   REGISTRY: ghcr.io
@@ -16,26 +18,20 @@ env:
 
 jobs:
   test:
-    name: Run Unit Tests
+    name: Run Rust Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Cache Cargo registry and target
+        uses: Swatinem/rust-cache@v2
 
-      - name: Run pytest
-        run: |
-          pytest -v
+      - name: Run cargo test
+        run: cargo test --verbose
 
   build-and-push:
     name: Build & Publish Container Image
@@ -69,7 +65,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust' }}
             type=sha,format=short,prefix=
             type=sha,format=short,prefix=sha-
             type=semver,pattern={{version}}
@@ -85,4 +81,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
