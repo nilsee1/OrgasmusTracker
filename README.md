@@ -13,8 +13,9 @@ Ein robuster, produktionsreifer und privater Telegram-Bot in Python zur Erfassun
   - **⚡ Einfacher Modus:** Speichert sofort mit einem Klick mit aktuellem Zeitstempel.
   - **📝 Ausführlicher Modus:** Erfasst schrittweise Datum/Uhrzeit (mit Schnellauswahl *Jetzt*), Begleitung (*Alleine* oder *Mit anderer Person* + Name), Qualität (Skala *1 bis 10*) und Notizen.
   - **Globale Navigation:** In jedem Schritt stehen `✅ Fertigstellen` (speichert alle bisherigen Angaben) und `❌ Abbruch` (verwirft den Entwurf) bereit.
-- **📜 Verlauf & Historie (`/liste` oder `/letzte`):**
+- **📜 Verlauf, Historie & Löschen (`/liste` oder `/letzte`):**
   - Listet die letzten 10 Einträge des anfragenden Nutzers chronologisch sortiert mit allen Details auf.
+  - **Interaktive Löschfunktion:** Über den Button `🗑️ Einträge löschen` können Einträge mit Checkboxen (`⬜` / `☑️`) markiert und nach einer Sicherheitsabfrage endgültig gelöscht werden.
 - **🐳 DevOps & Container-Ready:**
   - Schlankes Multi-Stage-fähiges `Dockerfile` basierend auf `python:3.12-slim`.
   - Ausführung unter dediziertem Non-Root-Benutzer (`appuser:10001`).

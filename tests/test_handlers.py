@@ -452,3 +452,188 @@ async def test_clear_keyboard_on_reentry_start_orgasmus(mock_db, monkeypatch):
         reply_markup=None,
     )
     assert context.user_data["last_keyboard_msg_id"] == 222
+
+
+@pytest.mark.asyncio
+async def test_liste_shows_delete_button(mock_db, monkeypatch):
+    """Verify /liste attaches the main delete keyboard if entries exist."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-19 12:00")
+
+    context = MagicMock()
+    update = create_mock_update(user_id=12345, text="/liste")
+
+    await bot.handle_liste(update, context)
+
+    update.effective_message.reply_text.assert_called_once()
+    kwargs = update.effective_message.reply_text.call_args[1]
+    assert kwargs.get("reply_markup") is not None
+    button = kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.callback_data == bot.LIST_DELETE_MODE
+    assert "🗑️ Einträge löschen" in button.text
+
+
+@pytest.mark.asyncio
+async def test_list_delete_mode_switch(mock_db, monkeypatch):
+    """Verify switching into delete selection mode."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    id1 = mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-18 10:00")
+    id2 = mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-19 10:00")
+
+    context = MagicMock()
+    context.user_data = {}
+    update = create_mock_update(user_id=12345, callback_data=bot.LIST_DELETE_MODE)
+
+    await bot.handle_list_delete_mode(update, context)
+
+    update.callback_query.edit_message_text.assert_called_once()
+    kwargs = update.callback_query.edit_message_text.call_args[1]
+    prompt = update.callback_query.edit_message_text.call_args[0][0]
+    assert "Wähle die Nummern der Einträge aus" in prompt
+
+    kb = kwargs["reply_markup"]
+    # Buttons should show ⬜ 1 and ⬜ 2
+    button_callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert f"{bot.LIST_TOGGLE_PREFIX}{id2}" in button_callbacks
+    assert f"{bot.LIST_TOGGLE_PREFIX}{id1}" in button_callbacks
+    assert bot.LIST_DELETE_CANCEL in button_callbacks
+
+
+@pytest.mark.asyncio
+async def test_list_toggle_entry(mock_db, monkeypatch):
+    """Verify toggling entries updates selected_ids and keyboard."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    id1 = mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-19 10:00")
+
+    context = MagicMock()
+    context.user_data = {}
+
+    # 1. Toggle ON
+    update1 = create_mock_update(user_id=12345, callback_data=f"{bot.LIST_TOGGLE_PREFIX}{id1}")
+    await bot.handle_list_toggle_entry(update1, context)
+
+    assert id1 in context.user_data["delete_selected_ids"]
+    update1.callback_query.edit_message_reply_markup.assert_called_once()
+    kb1 = update1.callback_query.edit_message_reply_markup.call_args[1]["reply_markup"]
+    texts1 = [b.text for row in kb1.inline_keyboard for b in row]
+    assert "☑️ 1" in texts1
+    assert any("🗑️ Auswahl löschen (1)" in t for t in texts1)
+
+    # 2. Toggle OFF
+    update2 = create_mock_update(user_id=12345, callback_data=f"{bot.LIST_TOGGLE_PREFIX}{id1}")
+    await bot.handle_list_toggle_entry(update2, context)
+
+    assert id1 not in context.user_data["delete_selected_ids"]
+    update2.callback_query.edit_message_reply_markup.assert_called_once()
+    kb2 = update2.callback_query.edit_message_reply_markup.call_args[1]["reply_markup"]
+    texts2 = [b.text for row in kb2.inline_keyboard for b in row]
+    assert "⬜ 1" in texts2
+    assert not any("Auswahl löschen" in t for t in texts2)
+
+
+@pytest.mark.asyncio
+async def test_list_delete_confirm_dialog(mock_db, monkeypatch):
+    """Verify confirmation prompt lists selected entries to be deleted."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    id1 = mock_db.add_entry(
+        user_id=12345,
+        type="detailed",
+        timestamp="2026-10-19 18:30",
+        partner_name="Alex",
+    )
+
+    context = MagicMock()
+    context.user_data = {"delete_selected_ids": {id1}}
+    update = create_mock_update(user_id=12345, callback_data=bot.LIST_DELETE_CONFIRM)
+
+    await bot.handle_list_delete_confirm(update, context)
+
+    update.callback_query.edit_message_text.assert_called_once()
+    msg = update.callback_query.edit_message_text.call_args[0][0]
+    assert "Sicherheitsabfrage" in msg
+    assert "19.10.2026 um 18:30 Uhr" in msg
+    assert "Alex" in msg
+    kb = update.callback_query.edit_message_text.call_args[1]["reply_markup"]
+    callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert bot.LIST_DELETE_EXECUTE in callbacks
+    assert bot.LIST_DELETE_MODE in callbacks
+    assert bot.LIST_DELETE_CANCEL in callbacks
+
+
+@pytest.mark.asyncio
+async def test_list_delete_confirm_empty_selection(mock_db, monkeypatch):
+    """Verify alert when trying to confirm without selection."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    context = MagicMock()
+    context.user_data = {"delete_selected_ids": set()}
+    update = create_mock_update(user_id=12345, callback_data=bot.LIST_DELETE_CONFIRM)
+
+    await bot.handle_list_delete_confirm(update, context)
+
+    update.callback_query.answer.assert_called_once_with(
+        "Bitte wähle mindestens einen Eintrag aus.", show_alert=True
+    )
+    update.callback_query.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_delete_execute_success(mock_db, monkeypatch):
+    """Verify deletion removes selected entries from DB and updates view."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    id1 = mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-18 10:00")
+    id2 = mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-19 10:00")
+
+    context = MagicMock()
+    context.user_data = {"delete_selected_ids": {id1}}
+    update = create_mock_update(user_id=12345, callback_data=bot.LIST_DELETE_EXECUTE)
+
+    await bot.handle_list_delete_execute(update, context)
+
+    # id1 must be deleted, id2 must remain
+    assert mock_db.get_entry_by_id(id1, user_id=12345) is None
+    assert mock_db.get_entry_by_id(id2, user_id=12345) is not None
+
+    update.callback_query.answer.assert_called_once_with("✅ 1 Eintrag/Einträge gelöscht.")
+    update.callback_query.edit_message_text.assert_called_once()
+    msg = update.callback_query.edit_message_text.call_args[0][0]
+    assert "1 Eintrag/Einträge erfolgreich gelöscht." in msg
+
+
+@pytest.mark.asyncio
+async def test_list_delete_cancel_restores_view(mock_db, monkeypatch):
+    """Verify cancel clears selected IDs and restores list view."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-19 10:00")
+
+    context = MagicMock()
+    context.user_data = {"delete_selected_ids": {999}}
+    update = create_mock_update(user_id=12345, callback_data=bot.LIST_DELETE_CANCEL)
+
+    await bot.handle_list_delete_cancel(update, context)
+
+    assert "delete_selected_ids" not in context.user_data
+    update.callback_query.edit_message_text.assert_called_once()
+    kb = update.callback_query.edit_message_text.call_args[1]["reply_markup"]
+    assert kb.inline_keyboard[0][0].callback_data == bot.LIST_DELETE_MODE
+
+
+@pytest.mark.asyncio
+async def test_user_cannot_delete_other_users_entry(mock_db, monkeypatch):
+    """Security test: Ensure User A cannot delete User B's entries."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345, 99999})
+    user_b_entry = mock_db.add_entry(user_id=99999, type="simple", timestamp="2026-10-19 12:00")
+
+    # User A tries to delete user B's entry directly via DB method
+    deleted = mock_db.delete_entry(entry_id=user_b_entry, user_id=12345)
+    assert deleted is False
+    assert mock_db.get_entry_by_id(user_b_entry, user_id=99999) is not None
+
+    # User A tries to delete user B's entry via bot handler
+    context = MagicMock()
+    context.user_data = {"delete_selected_ids": {user_b_entry}}
+    update_user_a = create_mock_update(user_id=12345, callback_data=bot.LIST_DELETE_EXECUTE)
+
+    await bot.handle_list_delete_execute(update_user_a, context)
+
+    # Entry must still be in DB
+    assert mock_db.get_entry_by_id(user_b_entry, user_id=99999) is not None

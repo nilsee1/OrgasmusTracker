@@ -84,6 +84,13 @@ QUALITY_PREFIX = "QUALITY_"
 ACTION_FINISH = "ACTION_FINISH"
 ACTION_CANCEL = "ACTION_CANCEL"
 
+# List Deletion Constants
+LIST_DELETE_MODE = "LIST_DEL_MODE"
+LIST_TOGGLE_PREFIX = "LIST_TOGGLE_"
+LIST_DELETE_CONFIRM = "LIST_DEL_CONFIRM"
+LIST_DELETE_EXECUTE = "LIST_DEL_EXEC"
+LIST_DELETE_CANCEL = "LIST_DEL_CANCEL"
+
 
 # ==============================================================================
 # Security Decorator & Helpers
@@ -278,6 +285,65 @@ def get_description_keyboard() -> InlineKeyboardMarkup:
                 )
             ],
             [InlineKeyboardButton("❌ Abbruch", callback_data=ACTION_CANCEL)],
+        ]
+    )
+
+
+def get_liste_main_keyboard() -> InlineKeyboardMarkup:
+    """Main keyboard under /liste with delete button."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🗑️ Einträge löschen", callback_data=LIST_DELETE_MODE)]]
+    )
+
+
+def get_liste_delete_select_keyboard(
+    entries: list[dict[str, Any]], selected_ids: set[int]
+) -> InlineKeyboardMarkup:
+    """Generate toggle buttons for entries (max 5 per row) and action buttons."""
+    buttons = []
+    for idx, entry in enumerate(entries, start=1):
+        is_selected = entry["id"] in selected_ids
+        icon = "☑️" if is_selected else "⬜"
+        text = f"{icon} {idx}"
+        buttons.append(
+            InlineKeyboardButton(text, callback_data=f"{LIST_TOGGLE_PREFIX}{entry['id']}")
+        )
+
+    # Chunk into rows of at most 5 buttons
+    keyboard_rows = [buttons[i : i + 5] for i in range(0, len(buttons), 5)]
+
+    # Action rows
+    if selected_ids:
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    f"🗑️ Auswahl löschen ({len(selected_ids)})",
+                    callback_data=LIST_DELETE_CONFIRM,
+                )
+            ]
+        )
+
+    keyboard_rows.append(
+        [InlineKeyboardButton("❌ Abbrechen", callback_data=LIST_DELETE_CANCEL)]
+    )
+
+    return InlineKeyboardMarkup(keyboard_rows)
+
+
+def get_liste_delete_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Confirmation keyboard before permanent deletion."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Ja, endgültig löschen",
+                    callback_data=LIST_DELETE_EXECUTE,
+                )
+            ],
+            [
+                InlineKeyboardButton("🔙 Zurück zur Auswahl", callback_data=LIST_DELETE_MODE),
+                InlineKeyboardButton("❌ Abbrechen", callback_data=LIST_DELETE_CANCEL),
+            ],
         ]
     )
 
@@ -673,21 +739,13 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
-@restricted
-async def handle_liste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Retrieve and display the last 10 entries for the requesting user."""
-    user = update.effective_user
-    if not user:
-        return
-
-    entries = await db.async_get_last_entries(user_id=user.id, limit=10)
+def format_entries_list_text(entries: list[dict[str, Any]]) -> str:
+    """Build formatted German text listing the entries."""
     if not entries:
-        await update.effective_message.reply_text(
+        return (
             "ℹ️ <b>Bisher sind noch keine Einträge vorhanden.</b>\n\n"
-            "Nutze /orgasmus, um deinen ersten Eintrag zu erstellen.",
-            parse_mode=ParseMode.HTML,
+            "Nutze /orgasmus, um deinen ersten Eintrag zu erstellen."
         )
-        return
 
     count = len(entries)
     text_blocks = [f"📊 <b>Deine letzten {count} Einträge:</b>\n"]
@@ -717,10 +775,200 @@ async def handle_liste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         text_blocks.append("\n".join(block_lines))
 
+    return "\n\n".join(text_blocks)
+
+
+@restricted
+async def handle_liste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Retrieve and display the last 10 entries for the requesting user."""
+    user = update.effective_user
+    if not user:
+        return
+
+    entries = await db.async_get_last_entries(user_id=user.id, limit=10)
+    if not entries:
+        await update.effective_message.reply_text(
+            format_entries_list_text([]),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    text = format_entries_list_text(entries)
     await update.effective_message.reply_text(
-        "\n\n".join(text_blocks),
+        text,
+        reply_markup=get_liste_main_keyboard(),
         parse_mode=ParseMode.HTML,
     )
+
+
+@restricted
+async def handle_list_delete_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Switch list message into delete selection mode."""
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    if not user:
+        return
+
+    entries = await db.async_get_last_entries(user_id=user.id, limit=10)
+    if not entries:
+        await query.edit_message_text(
+            format_entries_list_text([]),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    selected_ids = context.user_data.setdefault("delete_selected_ids", set())
+    # Clean up IDs that are no longer in current entries
+    selected_ids.intersection_update({e["id"] for e in entries})
+
+    text = format_entries_list_text(entries)
+    prompt = text + "\n\n👇 <b>Wähle die Nummern der Einträge aus, die du löschen möchtest:</b>"
+    await query.edit_message_text(
+        prompt,
+        reply_markup=get_liste_delete_select_keyboard(entries, selected_ids),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@restricted
+async def handle_list_toggle_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toggle entry selection in delete mode."""
+    query = update.callback_query
+    user = update.effective_user
+    if not user or not query.data:
+        return
+
+    match = re.search(r"^LIST_TOGGLE_(\d+)$", query.data)
+    if not match:
+        await query.answer()
+        return
+
+    entry_id = int(match.group(1))
+    selected_ids = context.user_data.setdefault("delete_selected_ids", set())
+
+    if entry_id in selected_ids:
+        selected_ids.remove(entry_id)
+    else:
+        selected_ids.add(entry_id)
+
+    await query.answer()
+
+    entries = await db.async_get_last_entries(user_id=user.id, limit=10)
+    selected_ids.intersection_update({e["id"] for e in entries})
+
+    await query.edit_message_reply_markup(
+        reply_markup=get_liste_delete_select_keyboard(entries, selected_ids)
+    )
+
+
+@restricted
+async def handle_list_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show confirmation prompt listing entries to be deleted."""
+    query = update.callback_query
+    user = update.effective_user
+    if not user:
+        return
+
+    selected_ids = context.user_data.get("delete_selected_ids", set())
+    if not selected_ids:
+        await query.answer("Bitte wähle mindestens einen Eintrag aus.", show_alert=True)
+        return
+
+    await query.answer()
+
+    entries = await db.async_get_last_entries(user_id=user.id, limit=10)
+    to_delete = [e for e in entries if e["id"] in selected_ids]
+
+    if not to_delete:
+        context.user_data.pop("delete_selected_ids", None)
+        await query.edit_message_text(
+            format_entries_list_text(entries),
+            reply_markup=get_liste_main_keyboard() if entries else None,
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    lines = [
+        "⚠️ <b>Sicherheitsabfrage</b>\n",
+        f"Möchtest du folgende(n) <b>{len(to_delete)}</b> Eintrag/Einträge wirklich unwiderruflich löschen?\n",
+    ]
+    for e in to_delete:
+        ts_fmt = format_timestamp_display(e["timestamp"])
+        etype = "Ausführlich" if e["type"] == "detailed" else "Einfach"
+        extra = ""
+        if e.get("partner_name"):
+            extra = f" (mit {html.escape(e['partner_name'])})"
+        elif e.get("company"):
+            extra = f" ({html.escape(e['company'])})"
+        lines.append(f"• 📅 <b>{html.escape(ts_fmt)}</b> – <i>{etype}</i>{extra}")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=get_liste_delete_confirm_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@restricted
+async def handle_list_delete_execute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute deletion of selected entries."""
+    query = update.callback_query
+    user = update.effective_user
+    if not user:
+        return
+
+    selected_ids = context.user_data.pop("delete_selected_ids", set())
+    deleted_count = 0
+    for eid in selected_ids:
+        if await db.async_delete_entry(entry_id=eid, user_id=user.id):
+            deleted_count += 1
+
+    await query.answer(f"✅ {deleted_count} Eintrag/Einträge gelöscht.")
+
+    entries = await db.async_get_last_entries(user_id=user.id, limit=10)
+    if entries:
+        new_text = (
+            f"✅ <b>{deleted_count} Eintrag/Einträge erfolgreich gelöscht.</b>\n\n"
+            + format_entries_list_text(entries)
+        )
+        await query.edit_message_text(
+            new_text,
+            reply_markup=get_liste_main_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await query.edit_message_text(
+            format_entries_list_text([]),
+            parse_mode=ParseMode.HTML,
+        )
+
+
+@restricted
+async def handle_list_delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel deletion mode and restore normal list view."""
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    if not user:
+        return
+
+    context.user_data.pop("delete_selected_ids", None)
+    entries = await db.async_get_last_entries(user_id=user.id, limit=10)
+
+    if entries:
+        await query.edit_message_text(
+            format_entries_list_text(entries),
+            reply_markup=get_liste_main_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await query.edit_message_text(
+            format_entries_list_text([]),
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -821,6 +1069,23 @@ def create_application() -> Application:
     )
     application.add_handler(
         CommandHandler(["cancel", "Cancel", "abbrechen", "Abbrechen"], handle_cancel_command)
+    )
+
+    # Register list deletion callbacks
+    application.add_handler(
+        CallbackQueryHandler(handle_list_delete_mode, pattern=f"^{LIST_DELETE_MODE}$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handle_list_toggle_entry, pattern=r"^LIST_TOGGLE_(\d+)$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handle_list_delete_confirm, pattern=f"^{LIST_DELETE_CONFIRM}$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handle_list_delete_execute, pattern=f"^{LIST_DELETE_EXECUTE}$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(handle_list_delete_cancel, pattern=f"^{LIST_DELETE_CANCEL}$")
     )
 
     # Add error handler
