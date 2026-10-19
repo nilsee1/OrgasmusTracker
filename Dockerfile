@@ -8,6 +8,7 @@ FROM python:3.12-slim
 # Set Python environment flags
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     TZ=Europe/Berlin
 
 # Install security certificates and timezone data
@@ -44,5 +45,5 @@ USER appuser
 VOLUME ["/app/data"]
 
 # Run the Telegram bot
-CMD ["python", "src/bot.py"]
+CMD ["python", "-m", "src.bot"]
 
