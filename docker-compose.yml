@@ -13,11 +13,6 @@ services:
       - DB_PATH=/app/data/tracker.db
     volumes:
       - ./data:/app/data
-    deploy:
-      resources:
-        limits:
-          cpus: '0.50'
-          memory: 256M
     logging:
       driver: "json-file"
       options:
