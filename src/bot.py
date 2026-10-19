@@ -5,6 +5,7 @@ conversation flow, SQLite persistence, German UI, and strict authorization filte
 """
 
 import html
+import inspect
 import logging
 import os
 import re
@@ -25,6 +26,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -112,6 +114,45 @@ def restricted(func):
         return await func(update, context, *args, **kwargs)
 
     return wrapper
+
+
+def remember_keyboard_message(context: ContextTypes.DEFAULT_TYPE, message: Any) -> None:
+    """Store the message ID of the last sent or edited message containing an inline keyboard."""
+    if message is not None and getattr(context, "user_data", None) is not None:
+        msg_id = getattr(message, "message_id", None)
+        if msg_id is not None:
+            context.user_data["last_keyboard_msg_id"] = msg_id
+
+
+async def clear_previous_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove inline keyboard from the previous bot message if present."""
+    if not getattr(context, "user_data", None):
+        return
+
+    msg_id = context.user_data.pop("last_keyboard_msg_id", None)
+    if not msg_id or not update.effective_chat or not getattr(context, "bot", None):
+        return
+
+    try:
+        res = context.bot.edit_message_reply_markup(
+            chat_id=update.effective_chat.id,
+            message_id=msg_id,
+            reply_markup=None,
+        )
+        if inspect.isawaitable(res):
+            await res
+    except TelegramError as e:
+        logger.debug(
+            "Konnte vorheriges Inline-Keyboard nicht entfernen (msg_id=%s): %s",
+            msg_id,
+            e,
+        )
+    except Exception as e:
+        logger.debug(
+            "Unerwarteter Fehler beim Entfernen des Keyboards (msg_id=%s): %s",
+            msg_id,
+            e,
+        )
 
 
 def format_timestamp_display(ts_str: str) -> str:
@@ -339,20 +380,25 @@ async def persist_draft_and_send_summary(
 @restricted
 async def start_orgasmus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Trigger the tracking flow on /orgasmus."""
-    context.user_data.clear()
     text = "Möchtest du einen einfachen oder ausführlichen Orgasmus eintragen?"
+    msg = None
 
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
+        context.user_data.clear()
+        msg = await update.callback_query.edit_message_text(
             text,
             reply_markup=get_choose_type_keyboard(),
         )
     elif update.effective_message:
-        await update.effective_message.reply_text(
+        await clear_previous_keyboard(update, context)
+        context.user_data.clear()
+        msg = await update.effective_message.reply_text(
             text,
             reply_markup=get_choose_type_keyboard(),
         )
+
+    remember_keyboard_message(context, msg)
     return STATE_CHOOSE_TYPE
 
 
@@ -401,12 +447,13 @@ async def handle_type_detailed(update: Update, context: ContextTypes.DEFAULT_TYP
         "description": None,
     }
 
-    await query.edit_message_text(
+    msg = await query.edit_message_text(
         "📅 Bitte gib Datum und Uhrzeit ein (Format: <code>TT.MM.JJJJ HH:MM</code>, "
         f"z.B. <code>{now.strftime('%d.%m.%Y %H:%M')}</code>) oder wähle 'Jetzt':",
         reply_markup=get_datetime_keyboard(),
         parse_mode=ParseMode.HTML,
     )
+    remember_keyboard_message(context, msg)
     return STATE_DATETIME
 
 
@@ -420,37 +467,42 @@ async def handle_datetime_now(update: Update, context: ContextTypes.DEFAULT_TYPE
     draft = context.user_data.setdefault("draft", {})
     draft["timestamp"] = now.strftime("%Y-%m-%d %H:%M")
 
-    await query.edit_message_text(
+    msg = await query.edit_message_text(
         "👥 Warst du alleine oder mit einer anderen Person?",
         reply_markup=get_company_keyboard(),
     )
+    remember_keyboard_message(context, msg)
     return STATE_COMPANY
 
 
 @restricted
 async def handle_datetime_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle manual text input for date and time."""
+    await clear_previous_keyboard(update, context)
+
     text = update.message.text.strip()
     dt = parse_german_datetime(text)
 
     if not dt:
         now = datetime.now(BOT_TZ)
-        await update.message.reply_text(
+        msg = await update.message.reply_text(
             "⚠️ <b>Ungültiges Datumsformat!</b>\n\n"
             "Bitte gib Datum und Uhrzeit im Format <code>TT.MM.JJJJ HH:MM</code> ein "
             f"(z.B. <code>{now.strftime('%d.%m.%Y %H:%M')}</code>) oder wähle 'Jetzt':",
             reply_markup=get_datetime_keyboard(),
             parse_mode=ParseMode.HTML,
         )
+        remember_keyboard_message(context, msg)
         return STATE_DATETIME
 
     draft = context.user_data.setdefault("draft", {})
     draft["timestamp"] = dt.strftime("%Y-%m-%d %H:%M")
 
-    await update.message.reply_text(
+    msg = await update.message.reply_text(
         "👥 Warst du alleine oder mit einer anderen Person?",
         reply_markup=get_company_keyboard(),
     )
+    remember_keyboard_message(context, msg)
     return STATE_COMPANY
 
 
@@ -464,10 +516,11 @@ async def handle_company_alone(update: Update, context: ContextTypes.DEFAULT_TYP
     draft["company"] = "Alleine"
     draft["partner_name"] = None
 
-    await query.edit_message_text(
+    msg = await query.edit_message_text(
         "⭐ Wie war die Qualität auf einer Skala von 1 bis 10 (10 = das Beste)?",
         reply_markup=get_quality_keyboard(),
     )
+    remember_keyboard_message(context, msg)
     return STATE_QUALITY
 
 
@@ -480,24 +533,28 @@ async def handle_company_partner(update: Update, context: ContextTypes.DEFAULT_T
     draft = context.user_data.setdefault("draft", {})
     draft["company"] = "Mit anderer Person"
 
-    await query.edit_message_text(
+    msg = await query.edit_message_text(
         "💬 Bitte gib den Namen der Person als Text ein:",
         reply_markup=get_partner_name_keyboard(),
     )
+    remember_keyboard_message(context, msg)
     return STATE_PARTNER_NAME
 
 
 @restricted
 async def handle_partner_name_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Save partner name from text message."""
+    await clear_previous_keyboard(update, context)
+
     partner_name = update.message.text.strip()
     draft = context.user_data.setdefault("draft", {})
     draft["partner_name"] = partner_name
 
-    await update.message.reply_text(
+    msg = await update.message.reply_text(
         "⭐ Wie war die Qualität auf einer Skala von 1 bis 10 (10 = das Beste)?",
         reply_markup=get_quality_keyboard(),
     )
+    remember_keyboard_message(context, msg)
     return STATE_QUALITY
 
 
@@ -514,16 +571,18 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
         draft = context.user_data.setdefault("draft", {})
         draft["quality"] = quality_val
 
-    await query.edit_message_text(
+    msg = await query.edit_message_text(
         "📝 Möchtest du noch eine Beschreibung hinzufügen? Schicke einfach eine Nachricht oder klicke auf Fertigstellen:",
         reply_markup=get_description_keyboard(),
     )
+    remember_keyboard_message(context, msg)
     return STATE_DESCRIPTION
 
 
 @restricted
 async def handle_description_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle optional description input, persist entry, and end conversation."""
+    await clear_previous_keyboard(update, context)
     description = update.message.text.strip()
     draft = context.user_data.setdefault("draft", {})
     draft["description"] = description
@@ -543,6 +602,7 @@ async def handle_action_finish(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer()
         await persist_draft_and_send_summary(update, context, is_callback=True)
     elif update.effective_message:
+        await clear_previous_keyboard(update, context)
         await persist_draft_and_send_summary(update, context, is_callback=False)
 
     return ConversationHandler.END
@@ -551,13 +611,15 @@ async def handle_action_finish(update: Update, context: ContextTypes.DEFAULT_TYP
 @restricted
 async def handle_action_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Global navigation: Discard draft and cancel conversation."""
-    context.user_data.clear()
     query = update.callback_query
 
     if query:
         await query.answer()
+        context.user_data.clear()
         await query.edit_message_text("❌ Eintrag abgebrochen.")
     elif update.effective_message:
+        await clear_previous_keyboard(update, context)
+        context.user_data.clear()
         await update.effective_message.reply_text("❌ Eintrag abgebrochen.")
 
     return ConversationHandler.END
@@ -566,6 +628,7 @@ async def handle_action_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
 @restricted
 async def handle_cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /cancel or /abbrechen command."""
+    await clear_previous_keyboard(update, context)
     context.user_data.clear()
     if update.effective_message:
         await update.effective_message.reply_text("❌ Vorgang abgebrochen.")

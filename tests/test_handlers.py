@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from telegram import Update, User, Message, Chat, CallbackQuery
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ConversationHandler
 
 from src.database import Database
@@ -28,7 +29,7 @@ def mock_db():
         os.remove(temp_path)
 
 
-def create_mock_update(user_id: int, text: str = None, callback_data: str = None):
+def create_mock_update(user_id: int, text: str = None, callback_data: str = None, response_msg_id: int = 777):
     """Helper to create a realistic Telegram Update object."""
     update = MagicMock(spec=Update)
     user = User(id=user_id, is_bot=False, first_name="TestUser", username="testuser")
@@ -37,12 +38,15 @@ def create_mock_update(user_id: int, text: str = None, callback_data: str = None
     update.effective_user = user
     update.effective_chat = chat
 
+    sent_bot_msg = MagicMock(spec=Message)
+    sent_bot_msg.message_id = response_msg_id
+
     if callback_data is not None:
         query = MagicMock(spec=CallbackQuery)
         query.data = callback_data
         query.from_user = user
         query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
+        query.edit_message_text = AsyncMock(return_value=sent_bot_msg)
         update.callback_query = query
         update.effective_message = None
     else:
@@ -50,7 +54,7 @@ def create_mock_update(user_id: int, text: str = None, callback_data: str = None
         message.text = text
         message.from_user = user
         message.chat = chat
-        message.reply_text = AsyncMock()
+        message.reply_text = AsyncMock(return_value=sent_bot_msg)
         update.message = message
         update.effective_message = message
         update.callback_query = None
@@ -289,3 +293,162 @@ async def test_liste_command(mock_db, monkeypatch):
     assert "Einfach" in reply
     assert "Mia" in reply
     assert "9/10" in reply
+
+
+def test_remember_keyboard_message_helper():
+    """Verify storing message ID in user_data."""
+    context = MagicMock()
+    context.user_data = {}
+
+    msg = MagicMock(spec=Message)
+    msg.message_id = 123
+    bot.remember_keyboard_message(context, msg)
+    assert context.user_data["last_keyboard_msg_id"] == 123
+
+    # None or bool should not break or overwrite
+    bot.remember_keyboard_message(context, None)
+    assert context.user_data["last_keyboard_msg_id"] == 123
+    bot.remember_keyboard_message(context, True)
+    assert context.user_data["last_keyboard_msg_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_clear_previous_keyboard_helper():
+    """Verify clear_previous_keyboard calls edit_message_reply_markup with None."""
+    context = MagicMock()
+    context.user_data = {"last_keyboard_msg_id": 456}
+    context.bot.edit_message_reply_markup = AsyncMock()
+
+    update = create_mock_update(user_id=12345, text="test")
+    await bot.clear_previous_keyboard(update, context)
+
+    context.bot.edit_message_reply_markup.assert_called_once_with(
+        chat_id=12345,
+        message_id=456,
+        reply_markup=None,
+    )
+    assert "last_keyboard_msg_id" not in context.user_data
+
+    # Second call does nothing
+    context.bot.edit_message_reply_markup.reset_mock()
+    await bot.clear_previous_keyboard(update, context)
+    context.bot.edit_message_reply_markup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_clear_previous_keyboard_suppresses_telegram_error():
+    """Verify clear_previous_keyboard handles TelegramError gracefully."""
+    context = MagicMock()
+    context.user_data = {"last_keyboard_msg_id": 456}
+    context.bot.edit_message_reply_markup = AsyncMock(
+        side_effect=BadRequest("Message is not modified")
+    )
+
+    update = create_mock_update(user_id=12345, text="test")
+    await bot.clear_previous_keyboard(update, context)
+    assert "last_keyboard_msg_id" not in context.user_data
+
+
+@pytest.mark.asyncio
+async def test_clear_keyboard_on_datetime_text(mock_db, monkeypatch):
+    """Verify that datetime text input clears the previous keyboard."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    context = MagicMock()
+    context.user_data = {"last_keyboard_msg_id": 789}
+    context.bot.edit_message_reply_markup = AsyncMock()
+
+    update = create_mock_update(user_id=12345, text="19.10.2026 18:30", response_msg_id=888)
+    state = await bot.handle_datetime_text(update, context)
+
+    assert state == bot.STATE_COMPANY
+    context.bot.edit_message_reply_markup.assert_called_once_with(
+        chat_id=12345,
+        message_id=789,
+        reply_markup=None,
+    )
+    # The new message sent by the bot should now be tracked
+    assert context.user_data["last_keyboard_msg_id"] == 888
+
+
+@pytest.mark.asyncio
+async def test_clear_keyboard_on_partner_name_text(mock_db, monkeypatch):
+    """Verify that partner name text input clears the previous keyboard."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    context = MagicMock()
+    context.user_data = {"last_keyboard_msg_id": 333, "draft": {}}
+    context.bot.edit_message_reply_markup = AsyncMock()
+
+    update = create_mock_update(user_id=12345, text="Sam", response_msg_id=444)
+    state = await bot.handle_partner_name_text(update, context)
+
+    assert state == bot.STATE_QUALITY
+    context.bot.edit_message_reply_markup.assert_called_once_with(
+        chat_id=12345,
+        message_id=333,
+        reply_markup=None,
+    )
+    assert context.user_data["last_keyboard_msg_id"] == 444
+
+
+@pytest.mark.asyncio
+async def test_clear_keyboard_on_description_text(mock_db, monkeypatch):
+    """Verify that description text input clears the previous keyboard."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    context = MagicMock()
+    context.user_data = {
+        "last_keyboard_msg_id": 555,
+        "draft": {
+            "type": "detailed",
+            "timestamp": "2026-10-19 18:30",
+        },
+    }
+    context.bot.edit_message_reply_markup = AsyncMock()
+
+    update = create_mock_update(user_id=12345, text="Super Erfahrung")
+    state = await bot.handle_description_text(update, context)
+
+    assert state == ConversationHandler.END
+    context.bot.edit_message_reply_markup.assert_called_once_with(
+        chat_id=12345,
+        message_id=555,
+        reply_markup=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clear_keyboard_on_cancel_command(mock_db, monkeypatch):
+    """Verify that /cancel command clears the previous keyboard."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    context = MagicMock()
+    context.user_data = {"last_keyboard_msg_id": 666}
+    context.bot.edit_message_reply_markup = AsyncMock()
+
+    update = create_mock_update(user_id=12345, text="/cancel")
+    state = await bot.handle_cancel_command(update, context)
+
+    assert state == ConversationHandler.END
+    context.bot.edit_message_reply_markup.assert_called_once_with(
+        chat_id=12345,
+        message_id=666,
+        reply_markup=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clear_keyboard_on_reentry_start_orgasmus(mock_db, monkeypatch):
+    """Verify that re-entering via /orgasmus command clears the previous keyboard."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    context = MagicMock()
+    context.user_data = {"last_keyboard_msg_id": 111}
+    context.bot.edit_message_reply_markup = AsyncMock()
+
+    update = create_mock_update(user_id=12345, text="/orgasmus", response_msg_id=222)
+    state = await bot.start_orgasmus(update, context)
+
+    assert state == bot.STATE_CHOOSE_TYPE
+    context.bot.edit_message_reply_markup.assert_called_once_with(
+        chat_id=12345,
+        message_id=111,
+        reply_markup=None,
+    )
+    assert context.user_data["last_keyboard_msg_id"] == 222
