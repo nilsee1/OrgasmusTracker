@@ -1,0 +1,26 @@
+services:
+  orgasmus-tracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/nilsee1/orgasmustracker:latest
+    container_name: orgasmus-tracker-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      - DB_PATH=/app/data/tracker.db
+    volumes:
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+

@@ -1,0 +1,6 @@
+python-telegram-bot[ext]==21.10
+python-dotenv==1.0.1
+tzdata==2024.2
+pytest==8.3.4
+pytest-asyncio==0.25.2
+
