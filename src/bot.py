@@ -7,7 +7,6 @@ conversation flow, SQLite persistence, German UI, and strict authorization filte
 import html
 import inspect
 import logging
-import os
 import re
 import sys
 from datetime import datetime
@@ -90,6 +89,11 @@ LIST_TOGGLE_PREFIX = "LIST_TOGGLE_"
 LIST_DELETE_CONFIRM = "LIST_DEL_CONFIRM"
 LIST_DELETE_EXECUTE = "LIST_DEL_EXEC"
 LIST_DELETE_CANCEL = "LIST_DEL_CANCEL"
+
+# Input Validation Constants
+MAX_PARTNER_NAME_LENGTH = 100
+MAX_DESCRIPTION_LENGTH = 300
+
 
 
 # ==============================================================================
@@ -548,13 +552,25 @@ async def handle_datetime_text(update: Update, context: ContextTypes.DEFAULT_TYP
 
     text = update.message.text.strip()
     dt = parse_german_datetime(text)
+    now = datetime.now(BOT_TZ)
 
     if not dt:
-        now = datetime.now(BOT_TZ)
         msg = await update.message.reply_text(
             "⚠️ <b>Ungültiges Datumsformat!</b>\n\n"
             "Bitte gib Datum und Uhrzeit im Format <code>TT.MM.JJJJ HH:MM</code> ein "
             f"(z.B. <code>{now.strftime('%d.%m.%Y %H:%M')}</code>) oder wähle 'Jetzt':",
+            reply_markup=get_datetime_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        remember_keyboard_message(context, msg)
+        return STATE_DATETIME
+
+    dt_aware = dt.replace(tzinfo=BOT_TZ)
+    if dt_aware > now:
+        msg = await update.message.reply_text(
+            "⚠️ <b>Ungültiges Datum!</b>\n\n"
+            "Das Datum darf nicht in der Zukunft liegen. "
+            "Bitte gib ein vergangenes Datum ein oder wähle 'Jetzt':",
             reply_markup=get_datetime_keyboard(),
             parse_mode=ParseMode.HTML,
         )
@@ -613,6 +629,17 @@ async def handle_partner_name_text(update: Update, context: ContextTypes.DEFAULT
     await clear_previous_keyboard(update, context)
 
     partner_name = update.message.text.strip()
+    if len(partner_name) > MAX_PARTNER_NAME_LENGTH:
+        msg = await update.message.reply_text(
+            "⚠️ <b>Name zu lang!</b>\n\n"
+            f"Der Name darf maximal {MAX_PARTNER_NAME_LENGTH} Zeichen lang sein "
+            f"(aktuell: {len(partner_name)}). Bitte gib einen kürzeren Namen ein:",
+            reply_markup=get_partner_name_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        remember_keyboard_message(context, msg)
+        return STATE_PARTNER_NAME
+
     draft = context.user_data.setdefault("draft", {})
     draft["partner_name"] = partner_name
 
@@ -650,6 +677,17 @@ async def handle_description_text(update: Update, context: ContextTypes.DEFAULT_
     """Handle optional description input, persist entry, and end conversation."""
     await clear_previous_keyboard(update, context)
     description = update.message.text.strip()
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        msg = await update.message.reply_text(
+            "⚠️ <b>Beschreibung zu lang!</b>\n\n"
+            f"Die Beschreibung darf maximal {MAX_DESCRIPTION_LENGTH} Zeichen lang sein "
+            f"(aktuell: {len(description)}). Bitte fasse dich etwas kürzer:",
+            reply_markup=get_description_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        remember_keyboard_message(context, msg)
+        return STATE_DESCRIPTION
+
     draft = context.user_data.setdefault("draft", {})
     draft["description"] = description
 
@@ -771,7 +809,10 @@ def format_entries_list_text(entries: list[dict[str, Any]]) -> str:
                 block_lines.append(f"   ⭐ Qualität: {entry['quality']}/10")
 
             if entry.get("description"):
-                block_lines.append(f"   📝 Notiz: {html.escape(entry['description'])}")
+                desc = entry["description"]
+                if len(desc) > MAX_DESCRIPTION_LENGTH:
+                    desc = desc[:MAX_DESCRIPTION_LENGTH] + "…"
+                block_lines.append(f"   📝 Notiz: {html.escape(desc)}")
 
         text_blocks.append("\n".join(block_lines))
 
@@ -784,6 +825,8 @@ async def handle_liste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user
     if not user:
         return
+
+    context.user_data.pop("delete_selected_ids", None)
 
     entries = await db.async_get_last_entries(user_id=user.id, limit=10)
     if not entries:
@@ -920,10 +963,13 @@ async def handle_list_delete_execute(update: Update, context: ContextTypes.DEFAU
         return
 
     selected_ids = context.user_data.pop("delete_selected_ids", set())
-    deleted_count = 0
-    for eid in selected_ids:
-        if await db.async_delete_entry(entry_id=eid, user_id=user.id):
-            deleted_count += 1
+    if hasattr(db, "async_delete_entries"):
+        deleted_count = await db.async_delete_entries(entry_ids=selected_ids, user_id=user.id)
+    else:
+        deleted_count = 0
+        for eid in selected_ids:
+            if await db.async_delete_entry(entry_id=eid, user_id=user.id):
+                deleted_count += 1
 
     await query.answer(f"✅ {deleted_count} Eintrag/Einträge gelöscht.")
 
@@ -1016,23 +1062,16 @@ def create_application() -> Application:
             STATE_CHOOSE_TYPE: [
                 CallbackQueryHandler(handle_type_simple, pattern=f"^{TYPE_SIMPLE}$"),
                 CallbackQueryHandler(handle_type_detailed, pattern=f"^{TYPE_DETAILED}$"),
-                CallbackQueryHandler(handle_action_cancel, pattern=f"^{ACTION_CANCEL}$"),
             ],
             STATE_DATETIME: [
                 CallbackQueryHandler(handle_datetime_now, pattern=f"^{TIME_NOW}$"),
-                CallbackQueryHandler(handle_action_finish, pattern=f"^{ACTION_FINISH}$"),
-                CallbackQueryHandler(handle_action_cancel, pattern=f"^{ACTION_CANCEL}$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_datetime_text),
             ],
             STATE_COMPANY: [
                 CallbackQueryHandler(handle_company_alone, pattern=f"^{COMPANY_ALONE}$"),
                 CallbackQueryHandler(handle_company_partner, pattern=f"^{COMPANY_PARTNER}$"),
-                CallbackQueryHandler(handle_action_finish, pattern=f"^{ACTION_FINISH}$"),
-                CallbackQueryHandler(handle_action_cancel, pattern=f"^{ACTION_CANCEL}$"),
             ],
             STATE_PARTNER_NAME: [
-                CallbackQueryHandler(handle_action_finish, pattern=f"^{ACTION_FINISH}$"),
-                CallbackQueryHandler(handle_action_cancel, pattern=f"^{ACTION_CANCEL}$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_partner_name_text),
             ],
             STATE_QUALITY: [
@@ -1040,12 +1079,8 @@ def create_application() -> Application:
                     handle_quality_choice,
                     pattern=f"^{QUALITY_PREFIX}([1-9]|10)$",
                 ),
-                CallbackQueryHandler(handle_action_finish, pattern=f"^{ACTION_FINISH}$"),
-                CallbackQueryHandler(handle_action_cancel, pattern=f"^{ACTION_CANCEL}$"),
             ],
             STATE_DESCRIPTION: [
-                CallbackQueryHandler(handle_action_finish, pattern=f"^{ACTION_FINISH}$"),
-                CallbackQueryHandler(handle_action_cancel, pattern=f"^{ACTION_CANCEL}$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description_text),
             ],
         },

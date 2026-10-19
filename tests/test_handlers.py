@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from datetime import datetime, timedelta
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -637,3 +638,107 @@ async def test_user_cannot_delete_other_users_entry(mock_db, monkeypatch):
 
     # Entry must still be in DB
     assert mock_db.get_entry_by_id(user_b_entry, user_id=99999) is not None
+
+
+@pytest.mark.asyncio
+async def test_handle_datetime_text_future_date_rejected(mock_db, monkeypatch):
+    """Verify that entering a future date is rejected and stays in STATE_DATETIME."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    future_dt = datetime.now(bot.BOT_TZ) + timedelta(days=2)
+    future_str = future_dt.strftime("%d.%m.%Y %H:%M")
+
+    update = create_mock_update(user_id=12345, text=future_str, response_msg_id=101)
+    context = MagicMock()
+    context.user_data = {"draft": {}}
+
+    res = await bot.handle_datetime_text(update, context)
+
+    assert res == bot.STATE_DATETIME
+    assert "timestamp" not in context.user_data["draft"]
+    update.message.reply_text.assert_called_once()
+    msg = update.message.reply_text.call_args[0][0]
+    assert "Ungültiges Datum!" in msg
+    assert "Das Datum darf nicht in der Zukunft liegen" in msg
+    assert context.user_data.get("last_keyboard_msg_id") == 101
+
+
+@pytest.mark.asyncio
+async def test_handle_partner_name_text_length_limit(mock_db, monkeypatch):
+    """Verify that partner name exceeding MAX_PARTNER_NAME_LENGTH is rejected."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    too_long_name = "P" * (bot.MAX_PARTNER_NAME_LENGTH + 1)
+
+    update = create_mock_update(user_id=12345, text=too_long_name, response_msg_id=102)
+    context = MagicMock()
+    context.user_data = {"draft": {}}
+
+    res = await bot.handle_partner_name_text(update, context)
+
+    assert res == bot.STATE_PARTNER_NAME
+    assert "partner_name" not in context.user_data["draft"]
+    update.message.reply_text.assert_called_once()
+    msg = update.message.reply_text.call_args[0][0]
+    assert "Name zu lang!" in msg
+    assert str(bot.MAX_PARTNER_NAME_LENGTH) in msg
+    assert context.user_data.get("last_keyboard_msg_id") == 102
+
+
+@pytest.mark.asyncio
+async def test_handle_description_text_length_limit(mock_db, monkeypatch):
+    """Verify that description exceeding MAX_DESCRIPTION_LENGTH is rejected."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    too_long_desc = "D" * (bot.MAX_DESCRIPTION_LENGTH + 1)
+
+    update = create_mock_update(user_id=12345, text=too_long_desc, response_msg_id=103)
+    context = MagicMock()
+    context.user_data = {"draft": {}}
+
+    res = await bot.handle_description_text(update, context)
+
+    assert res == bot.STATE_DESCRIPTION
+    assert "description" not in context.user_data["draft"]
+    update.message.reply_text.assert_called_once()
+    msg = update.message.reply_text.call_args[0][0]
+    assert "Beschreibung zu lang!" in msg
+    assert str(bot.MAX_DESCRIPTION_LENGTH) in msg
+    assert context.user_data.get("last_keyboard_msg_id") == 103
+
+    # Ensure nothing was saved to DB
+    entries = mock_db.get_last_entries(user_id=12345)
+    assert len(entries) == 0
+
+
+@pytest.mark.asyncio
+async def test_handle_liste_resets_selected_ids(mock_db, monkeypatch):
+    """Verify that running /liste clears any stale delete_selected_ids."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-19 12:00")
+
+    update = create_mock_update(user_id=12345, text="/liste")
+    context = MagicMock()
+    context.user_data = {"delete_selected_ids": {99, 100}}
+
+    await bot.handle_liste(update, context)
+
+    assert "delete_selected_ids" not in context.user_data
+
+
+@pytest.mark.asyncio
+async def test_handle_list_delete_execute_batch_delete_called(mock_db, monkeypatch):
+    """Verify that handle_list_delete_execute deletes multiple entries at once using async_delete_entries."""
+    monkeypatch.setattr(config, "ALLOWED_USER_IDS", {12345})
+    id1 = mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-18 10:00")
+    id2 = mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-18 11:00")
+    id3 = mock_db.add_entry(user_id=12345, type="simple", timestamp="2026-10-18 12:00")
+
+    context = MagicMock()
+    context.user_data = {"delete_selected_ids": {id1, id2}}
+    update = create_mock_update(user_id=12345, callback_data=bot.LIST_DELETE_EXECUTE)
+
+    await bot.handle_list_delete_execute(update, context)
+
+    assert mock_db.get_entry_by_id(id1, user_id=12345) is None
+    assert mock_db.get_entry_by_id(id2, user_id=12345) is None
+    assert mock_db.get_entry_by_id(id3, user_id=12345) is not None
+    update.callback_query.answer.assert_called_once_with("✅ 2 Eintrag/Einträge gelöscht.")
+

@@ -6,7 +6,7 @@ import os
 import sqlite3
 import sys
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -162,6 +162,21 @@ class Database:
             cursor.execute(query, (entry_id, user_id))
             return cursor.rowcount > 0
 
+    def delete_entries(self, entry_ids: set[int] | list[int], user_id: int) -> int:
+        """Delete multiple entries belonging to user_id in a single transaction.
+
+        Returns the number of deleted rows.
+        """
+        if not entry_ids:
+            return 0
+        id_list = list(entry_ids)
+        placeholders = ", ".join("?" for _ in id_list)
+        query = f"DELETE FROM entries WHERE user_id = ? AND id IN ({placeholders});"
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (user_id, *id_list))
+            return cursor.rowcount
+
     # Async thread-safe wrappers for non-blocking execution in python-telegram-bot
     async def async_init_db(self) -> None:
         """Asynchronously initialize the database."""
@@ -206,3 +221,10 @@ class Database:
     async def async_delete_entry(self, entry_id: int, user_id: int) -> bool:
         """Asynchronously delete an entry by ID and user_id."""
         return await asyncio.to_thread(self.delete_entry, entry_id, user_id)
+
+    async def async_delete_entries(
+        self, entry_ids: set[int] | list[int], user_id: int
+    ) -> int:
+        """Asynchronously delete multiple entries belonging to user_id."""
+        return await asyncio.to_thread(self.delete_entries, entry_ids, user_id)
+

@@ -6,6 +6,8 @@ from src.bot import (
     parse_german_datetime,
     format_timestamp_display,
     format_detailed_summary,
+    format_entries_list_text,
+    MAX_DESCRIPTION_LENGTH,
     get_choose_type_keyboard,
     get_datetime_keyboard,
     get_company_keyboard,
@@ -127,4 +129,25 @@ def test_keyboards_structure():
     desc_callbacks = [btn.callback_data for row in desc_kb.inline_keyboard for btn in row]
     assert ACTION_FINISH in desc_callbacks
     assert ACTION_CANCEL in desc_callbacks
+
+
+def test_format_entries_list_text_truncation():
+    """Verify that descriptions longer than MAX_DESCRIPTION_LENGTH are cleanly truncated."""
+    long_desc = "A" * (MAX_DESCRIPTION_LENGTH + 50)
+    entries = [
+        {
+            "id": 1,
+            "type": "detailed",
+            "timestamp": "2026-10-19 18:30",
+            "company": "Alleine",
+            "partner_name": None,
+            "quality": 8,
+            "description": long_desc,
+        }
+    ]
+    text = format_entries_list_text(entries)
+    expected_truncated = ("A" * MAX_DESCRIPTION_LENGTH) + "…"
+    assert expected_truncated in text
+    assert long_desc not in text
+
 

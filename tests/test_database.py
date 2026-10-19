@@ -200,3 +200,50 @@ async def test_async_get_and_delete_entry(temp_db):
     assert entry_after is None
 
 
+def test_delete_entries_empty(temp_db):
+    """Verify that deleting with empty list or set returns 0."""
+    assert temp_db.delete_entries([], user_id=123) == 0
+    assert temp_db.delete_entries(set(), user_id=123) == 0
+
+
+def test_delete_entries_batch(temp_db):
+    """Verify batch deletion of multiple entries in a single call."""
+    e1 = temp_db.add_entry(user_id=123, type="simple", timestamp="2026-10-19 10:00")
+    e2 = temp_db.add_entry(user_id=123, type="simple", timestamp="2026-10-19 11:00")
+    e3 = temp_db.add_entry(user_id=123, type="simple", timestamp="2026-10-19 12:00")
+
+    deleted_count = temp_db.delete_entries({e1, e2}, user_id=123)
+    assert deleted_count == 2
+
+    remaining = temp_db.get_last_entries(user_id=123)
+    assert len(remaining) == 1
+    assert remaining[0]["id"] == e3
+
+
+def test_delete_entries_isolation(temp_db):
+    """Verify that batch delete cannot delete entries belonging to another user."""
+    e1 = temp_db.add_entry(user_id=123, type="simple", timestamp="2026-10-19 10:00")
+    e2 = temp_db.add_entry(user_id=456, type="simple", timestamp="2026-10-19 11:00")
+
+    # User 123 tries to delete both e1 and e2
+    deleted_count = temp_db.delete_entries([e1, e2], user_id=123)
+    assert deleted_count == 1
+
+    assert temp_db.get_entry_by_id(e1, user_id=123) is None
+    assert temp_db.get_entry_by_id(e2, user_id=456) is not None
+
+
+@pytest.mark.asyncio
+async def test_async_delete_entries(temp_db):
+    """Verify async_delete_entries wrapper."""
+    e1 = await temp_db.async_add_entry(user_id=777, type="simple", timestamp="2026-10-19 10:00")
+    e2 = await temp_db.async_add_entry(user_id=777, type="simple", timestamp="2026-10-19 11:00")
+
+    count = await temp_db.async_delete_entries({e1, e2}, user_id=777)
+    assert count == 2
+
+    entries = await temp_db.async_get_last_entries(user_id=777)
+    assert len(entries) == 0
+
+
+

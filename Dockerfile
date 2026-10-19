@@ -33,10 +33,7 @@ RUN mkdir -p /app/data && \
     chown -R appuser:appgroup /app
 
 # Copy application source code
-COPY src/ /app/src/
-
-# Ensure all application files belong to non-root appuser
-RUN chown -R appuser:appgroup /app
+COPY --chown=appuser:appgroup src/ /app/src/
 
 # Switch to non-root user
 USER appuser

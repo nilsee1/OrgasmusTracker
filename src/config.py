@@ -3,7 +3,6 @@
 import logging
 import os
 import zoneinfo
-from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env if present
