@@ -1,6 +1,7 @@
 """Unit tests for SQLite database layer."""
 
 import os
+import sqlite3
 import tempfile
 import pytest
 from src.database import Database
@@ -150,4 +151,52 @@ async def test_async_database_methods(temp_db):
     entries = await temp_db.async_get_last_entries(user_id=777, limit=5)
     assert len(entries) == 1
     assert entries[0]["user_id"] == 777
+
+
+def test_connection_is_closed_outside_context_manager(temp_db):
+    """Verify that sqlite3.Connection is closed upon exiting with get_connection()."""
+    with temp_db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1;")
+        assert cursor.fetchone()[0] == 1
+
+    # Outside the with-block, the connection must be closed
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1;")
+
+
+def test_transaction_rollback_on_exception(temp_db):
+    """Verify that an exception inside the context manager causes rollback."""
+    try:
+        with temp_db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO entries (user_id, type, timestamp, created_at) "
+                "VALUES (9999, 'simple', '2026-10-19 12:00', 'now');"
+            )
+            raise RuntimeError("Simulated crash")
+    except RuntimeError:
+        pass
+
+    entries = temp_db.get_last_entries(user_id=9999)
+    assert len(entries) == 0
+
+
+@pytest.mark.asyncio
+async def test_async_get_and_delete_entry(temp_db):
+    """Verify async_get_entry_by_id and async_delete_entry."""
+    entry_id = await temp_db.async_add_entry(
+        user_id=888,
+        type="simple",
+        timestamp="2026-10-19 16:00",
+    )
+    entry = await temp_db.async_get_entry_by_id(entry_id, user_id=888)
+    assert entry is not None
+    assert entry["id"] == entry_id
+
+    deleted = await temp_db.async_delete_entry(entry_id, user_id=888)
+    assert deleted is True
+
+    entry_after = await temp_db.async_get_entry_by_id(entry_id, user_id=888)
+    assert entry_after is None
+
 

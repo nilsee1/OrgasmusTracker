@@ -5,9 +5,10 @@ import logging
 import os
 import sqlite3
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -35,11 +36,16 @@ class Database:
             except OSError as e:
                 logger.warning("Verzeichnis '%s' konnte nicht vorab erstellt werden: %s", parent_dir, e)
 
-    def get_connection(self) -> sqlite3.Connection:
-        """Create and return a configured sqlite3 connection with Row factory."""
-        conn = sqlite3.connect(self.db_path)
+    @contextmanager
+    def get_connection(self) -> Iterator[sqlite3.Connection]:
+        """Create, yield, and reliably close a configured sqlite3 connection."""
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def init_db(self) -> None:
         """Create database tables and indices if they do not exist."""
@@ -71,7 +77,6 @@ class Database:
                 ON entries (user_id, timestamp DESC, id DESC);
                 """
             )
-            conn.commit()
         logger.info("Datenbank erfolgreich initialisiert unter: %s", self.db_path)
 
     def add_entry(
@@ -117,7 +122,6 @@ class Database:
                     created_at,
                 ),
             )
-            conn.commit()
             entry_id = cursor.lastrowid
             logger.info("Neuer Eintrag gespeichert: ID=%s für User-ID=%s (%s)", entry_id, user_id, type)
             return entry_id
@@ -156,7 +160,6 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query, (entry_id, user_id))
-            conn.commit()
             return cursor.rowcount > 0
 
     # Async thread-safe wrappers for non-blocking execution in python-telegram-bot
@@ -193,3 +196,13 @@ class Database:
     ) -> list[dict[str, Any]]:
         """Asynchronously fetch the last entries."""
         return await asyncio.to_thread(self.get_last_entries, user_id, limit)
+
+    async def async_get_entry_by_id(
+        self, entry_id: int, user_id: int
+    ) -> dict[str, Any] | None:
+        """Asynchronously fetch a specific entry by ID and user_id."""
+        return await asyncio.to_thread(self.get_entry_by_id, entry_id, user_id)
+
+    async def async_delete_entry(self, entry_id: int, user_id: int) -> bool:
+        """Asynchronously delete an entry by ID and user_id."""
+        return await asyncio.to_thread(self.delete_entry, entry_id, user_id)
