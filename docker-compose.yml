@@ -1,6 +1,7 @@
 services:
   orgasmus-tracker:
     image: ghcr.io/nilsee1/orgasmustracker:latest
+    pull_policy: always
     container_name: orgasmus-tracker-bot
     restart: unless-stopped
     env_file:
