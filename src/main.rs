@@ -10,7 +10,8 @@ use orgasmus_tracker::config::Config;
 use orgasmus_tracker::database::Database;
 use orgasmus_tracker::handlers::{
     handle_callback_query, handle_command, handle_datetime_message,
-    handle_description_message, handle_partner_name_message, Command, State,
+    handle_description_message, handle_location_message,
+    handle_partner_name_message, Command, State,
 };
 
 #[tokio::main]
@@ -80,6 +81,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .branch(
             dptree::case![State::PartnerName { draft, last_keyboard_msg_id }]
                 .endpoint(handle_partner_name_message),
+        )
+        .branch(
+            dptree::case![State::Location { draft, last_keyboard_msg_id }]
+                .endpoint(handle_location_message),
         )
         .branch(
             dptree::case![State::Description { draft, last_keyboard_msg_id }]

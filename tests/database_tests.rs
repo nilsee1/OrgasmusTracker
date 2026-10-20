@@ -14,7 +14,7 @@ async fn test_init_db() {
 
     // Verify tables exist by inserting directly
     let res = db
-        .add_entry(123, "simple", "2026-10-19 18:30", None, None, None, None, None)
+        .add_entry(123, "simple", "2026-10-19 18:30", None, None, None, None, None, None)
         .await;
     assert!(res.is_ok());
 }
@@ -24,7 +24,7 @@ async fn test_add_simple_entry() {
     let (db, _tmp) = create_test_db().await;
 
     let id = db
-        .add_entry(100, "simple", "2026-10-19 18:30", None, None, None, None, None)
+        .add_entry(100, "simple", "2026-10-19 18:30", None, None, None, None, None, None)
         .await
         .unwrap();
     assert!(id > 0);
@@ -36,6 +36,7 @@ async fn test_add_simple_entry() {
     assert_eq!(entry.timestamp, "2026-10-19 18:30");
     assert!(entry.company.is_none());
     assert!(entry.partner_name.is_none());
+    assert!(entry.location.is_none());
     assert!(entry.quality.is_none());
     assert!(entry.description.is_none());
 }
@@ -51,6 +52,7 @@ async fn test_add_detailed_entry() {
             "2026-10-19 20:00",
             Some("Mit anderer Person"),
             Some("Julia"),
+            Some("Nils"),
             Some(9),
             Some("Traumhaft schön!"),
             Some("2026-10-19T20:01:00Z"),
@@ -64,6 +66,7 @@ async fn test_add_detailed_entry() {
     assert_eq!(entry.r#type, "detailed");
     assert_eq!(entry.company.as_deref(), Some("Mit anderer Person"));
     assert_eq!(entry.partner_name.as_deref(), Some("Julia"));
+    assert_eq!(entry.location.as_deref(), Some("Nils"));
     assert_eq!(entry.quality, Some(9));
     assert_eq!(entry.description.as_deref(), Some("Traumhaft schön!"));
     assert_eq!(entry.created_at, "2026-10-19T20:01:00Z");
@@ -74,7 +77,7 @@ async fn test_invalid_type_raises_error() {
     let (db, _tmp) = create_test_db().await;
 
     let res = db
-        .add_entry(100, "invalid_type", "2026-10-19 12:00", None, None, None, None, None)
+        .add_entry(100, "invalid_type", "2026-10-19 12:00", None, None, None, None, None, None)
         .await;
     assert!(matches!(res, Err(DbError::InvalidType(_))));
 }
@@ -84,12 +87,12 @@ async fn test_invalid_quality_raises_error() {
     let (db, _tmp) = create_test_db().await;
 
     let res_low = db
-        .add_entry(100, "detailed", "2026-10-19 12:00", None, None, Some(0), None, None)
+        .add_entry(100, "detailed", "2026-10-19 12:00", None, None, None, Some(0), None, None)
         .await;
     assert!(matches!(res_low, Err(DbError::InvalidQuality(0))));
 
     let res_high = db
-        .add_entry(100, "detailed", "2026-10-19 12:00", None, None, Some(11), None, None)
+        .add_entry(100, "detailed", "2026-10-19 12:00", None, None, None, Some(11), None, None)
         .await;
     assert!(matches!(res_high, Err(DbError::InvalidQuality(11))));
 }
@@ -103,6 +106,7 @@ async fn test_get_last_entries_ordering_and_limit() {
             300,
             "simple",
             &format!("2026-10-19 1{}:00", i),
+            None,
             None,
             None,
             None,
@@ -125,12 +129,12 @@ async fn test_isolation_between_users() {
     let (db, _tmp) = create_test_db().await;
 
     let id_a = db
-        .add_entry(111, "simple", "2026-10-19 10:00", None, None, None, None, None)
+        .add_entry(111, "simple", "2026-10-19 10:00", None, None, None, None, None, None)
         .await
         .unwrap();
 
     let id_b = db
-        .add_entry(222, "simple", "2026-10-19 11:00", None, None, None, None, None)
+        .add_entry(222, "simple", "2026-10-19 11:00", None, None, None, None, None, None)
         .await
         .unwrap();
 
@@ -148,7 +152,7 @@ async fn test_delete_entry() {
     let (db, _tmp) = create_test_db().await;
 
     let id = db
-        .add_entry(400, "simple", "2026-10-19 12:00", None, None, None, None, None)
+        .add_entry(400, "simple", "2026-10-19 12:00", None, None, None, None, None, None)
         .await
         .unwrap();
 
@@ -175,15 +179,15 @@ async fn test_delete_entries_batch() {
     let (db, _tmp) = create_test_db().await;
 
     let id1 = db
-        .add_entry(600, "simple", "2026-10-19 10:00", None, None, None, None, None)
+        .add_entry(600, "simple", "2026-10-19 10:00", None, None, None, None, None, None)
         .await
         .unwrap();
     let id2 = db
-        .add_entry(600, "simple", "2026-10-19 11:00", None, None, None, None, None)
+        .add_entry(600, "simple", "2026-10-19 11:00", None, None, None, None, None, None)
         .await
         .unwrap();
     let id3 = db
-        .add_entry(600, "simple", "2026-10-19 12:00", None, None, None, None, None)
+        .add_entry(600, "simple", "2026-10-19 12:00", None, None, None, None, None, None)
         .await
         .unwrap();
 
@@ -200,11 +204,11 @@ async fn test_delete_entries_isolation() {
     let (db, _tmp) = create_test_db().await;
 
     let id_a = db
-        .add_entry(700, "simple", "2026-10-19 10:00", None, None, None, None, None)
+        .add_entry(700, "simple", "2026-10-19 10:00", None, None, None, None, None, None)
         .await
         .unwrap();
     let id_b = db
-        .add_entry(800, "simple", "2026-10-19 11:00", None, None, None, None, None)
+        .add_entry(800, "simple", "2026-10-19 11:00", None, None, None, None, None, None)
         .await
         .unwrap();
 
@@ -225,18 +229,18 @@ async fn test_get_all_entries() {
     assert!(empty.is_empty());
 
     // Insert entries out of chronological order
-    db.add_entry(100, "simple", "2026-10-19 12:00", None, None, None, None, None)
+    db.add_entry(100, "simple", "2026-10-19 12:00", None, None, None, None, None, None)
         .await
         .unwrap();
-    db.add_entry(100, "simple", "2026-10-18 09:00", None, None, None, None, None)
+    db.add_entry(100, "simple", "2026-10-18 09:00", None, None, None, None, None, None)
         .await
         .unwrap();
-    db.add_entry(100, "simple", "2026-10-20 15:30", None, None, None, None, None)
+    db.add_entry(100, "simple", "2026-10-20 15:30", None, None, None, None, None, None)
         .await
         .unwrap();
 
     // Another user's entry
-    db.add_entry(200, "simple", "2026-10-19 14:00", None, None, None, None, None)
+    db.add_entry(200, "simple", "2026-10-19 14:00", None, None, None, None, None, None)
         .await
         .unwrap();
 
@@ -283,6 +287,7 @@ async fn test_get_statistics_aggregation() {
         "2026-10-20 10:00",
         Some("Alleine"),
         None,
+        Some("Nils"),
         Some(8),
         None,
         None,
@@ -297,6 +302,7 @@ async fn test_get_statistics_aggregation() {
         "2026-10-15 14:00",
         Some("Mit anderer Person"),
         Some("Alex"),
+        Some("Mika"),
         Some(9),
         None,
         None,
@@ -314,6 +320,7 @@ async fn test_get_statistics_aggregation() {
         None,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -325,6 +332,7 @@ async fn test_get_statistics_aggregation() {
         "2026-08-20 22:00",
         Some("Mit anderer Person"),
         Some("Sam"),
+        Some("Hotel"),
         Some(7),
         None,
         None,
@@ -338,6 +346,7 @@ async fn test_get_statistics_aggregation() {
         "detailed",
         "2025-11-15 19:00",
         Some("Alleine"),
+        None,
         None,
         Some(10),
         None,
@@ -356,6 +365,7 @@ async fn test_get_statistics_aggregation() {
         None,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -367,6 +377,7 @@ async fn test_get_statistics_aggregation() {
         "2024-06-01 12:00",
         Some("Mit anderer Person"),
         Some("Sam"),
+        None,
         Some(6),
         None,
         None,
@@ -380,6 +391,7 @@ async fn test_get_statistics_aggregation() {
         "detailed",
         "2026-10-20 11:00",
         Some("Alleine"),
+        None,
         None,
         Some(1),
         None,
@@ -401,5 +413,78 @@ async fn test_get_statistics_aggregation() {
 
     // Quality ratings for user_id: 8, 9, 7, 10, 6 -> sum = 40, count = 5 -> average = 8.0
     assert_eq!(stats.avg_quality, Some(8.0));
+}
+
+#[tokio::test]
+async fn test_migration_adds_location_column() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap().to_string();
+
+    // Simulate an older database schema without the location column
+    {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&format!("sqlite://{}", db_path))
+            .await
+            .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                company TEXT NULL,
+                partner_name TEXT NULL,
+                quality INTEGER NULL,
+                description TEXT NULL,
+                created_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert legacy row without location
+        sqlx::query(
+            r#"
+            INSERT INTO entries (user_id, type, timestamp, company, partner_name, quality, description, created_at)
+            VALUES (1, 'simple', '2026-10-19 12:00', NULL, NULL, NULL, NULL, '2026-10-19T12:00:00Z');
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        pool.close().await;
+    }
+
+    // Now connect with Database::connect which calls init_db()
+    let db = Database::connect(&db_path).await.unwrap();
+
+    // Check that legacy entry can be read and location is None
+    let entries = db.get_last_entries(1, 10).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].location, None);
+
+    // Insert new entry with location
+    let new_id = db
+        .add_entry(
+            1,
+            "detailed",
+            "2026-10-20 10:00",
+            Some("Alleine"),
+            None,
+            Some("Nils"),
+            Some(9),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let fetched = db.get_entry_by_id(new_id, 1).await.unwrap().unwrap();
+    assert_eq!(fetched.location.as_deref(), Some("Nils"));
 }
 

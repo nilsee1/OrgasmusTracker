@@ -75,6 +75,10 @@ pub fn format_detailed_summary(draft: &DraftEntry) -> String {
         _ => lines.push("👥 <b>Begleitung:</b> <i>Keine Angabe</i>".to_string()),
     }
 
+    if let Some(loc) = &draft.location {
+        lines.push(format!("📍 <b>Ort:</b> {}", html_escape::encode_text(loc)));
+    }
+
     if let Some(q) = draft.quality {
         lines.push(format!("⭐ <b>Qualität:</b> {}/10", q));
     } else {
@@ -134,6 +138,13 @@ pub fn format_entries_list_text(entries: &[Entry]) -> String {
                         html_escape::encode_text(company)
                     ));
                 }
+            }
+
+            if let Some(loc) = &entry.location {
+                block_lines.push(format!(
+                    "   📍 Ort: {}",
+                    html_escape::encode_text(loc)
+                ));
             }
 
             if let Some(quality) = entry.quality {
@@ -222,18 +233,19 @@ pub fn generate_csv_export(entries: &[Entry]) -> Vec<u8> {
     // Prepend UTF-8 BOM (\u{FEFF}) for German Excel
     buffer.extend_from_slice("\u{FEFF}".as_bytes());
 
-    let header = "ID;Typ;Datum_Uhrzeit;Begleitung;Partner;Qualitaet;Notiz;Erstellt_Am\r\n";
+    let header = "ID;Typ;Datum_Uhrzeit;Begleitung;Partner;Ort;Qualitaet;Notiz;Erstellt_Am\r\n";
     buffer.extend_from_slice(header.as_bytes());
 
     for entry in entries {
         let quality_str = entry.quality.map(|q| q.to_string()).unwrap_or_default();
         let line = format!(
-            "{};{};{};{};{};{};{};{}\r\n",
+            "{};{};{};{};{};{};{};{};{}\r\n",
             entry.id,
             escape_csv_field(&entry.r#type),
             escape_csv_field(&entry.timestamp),
             escape_csv_field(entry.company.as_deref().unwrap_or("")),
             escape_csv_field(entry.partner_name.as_deref().unwrap_or("")),
+            escape_csv_field(entry.location.as_deref().unwrap_or("")),
             escape_csv_field(&quality_str),
             escape_csv_field(entry.description.as_deref().unwrap_or("")),
             escape_csv_field(&entry.created_at),

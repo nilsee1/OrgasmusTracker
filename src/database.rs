@@ -100,6 +100,7 @@ impl Database {
                 timestamp TEXT NOT NULL,
                 company TEXT NULL,
                 partner_name TEXT NULL,
+                location TEXT NULL,
                 quality INTEGER NULL,
                 description TEXT NULL,
                 created_at TEXT NOT NULL
@@ -108,6 +109,20 @@ impl Database {
         )
         .execute(&self.pool)
         .await?;
+
+        // Migration for existing tables: ensure location column exists
+        let table_info = sqlx::query("PRAGMA table_info(entries);")
+            .fetch_all(&self.pool)
+            .await?;
+        let has_location = table_info.iter().any(|row| {
+            let col_name: String = row.get("name");
+            col_name == "location"
+        });
+        if !has_location {
+            sqlx::query("ALTER TABLE entries ADD COLUMN location TEXT;")
+                .execute(&self.pool)
+                .await?;
+        }
 
         // Create index for fast user history queries
         sqlx::query(
@@ -130,6 +145,7 @@ impl Database {
         timestamp: &str,
         company: Option<&str>,
         partner_name: Option<&str>,
+        location: Option<&str>,
         quality: Option<i64>,
         description: Option<&str>,
         created_at: Option<&str>,
@@ -155,8 +171,8 @@ impl Database {
 
         let result = sqlx::query(
             r#"
-            INSERT INTO entries (user_id, type, timestamp, company, partner_name, quality, description, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO entries (user_id, type, timestamp, company, partner_name, location, quality, description, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             "#,
         )
         .bind(user_id)
@@ -164,6 +180,7 @@ impl Database {
         .bind(timestamp)
         .bind(company)
         .bind(partner_name)
+        .bind(location)
         .bind(quality)
         .bind(description)
         .bind(created_at_val)
@@ -177,7 +194,7 @@ impl Database {
     pub async fn get_last_entries(&self, user_id: i64, limit: i64) -> Result<Vec<Entry>, DbError> {
         let entries = sqlx::query_as::<_, Entry>(
             r#"
-            SELECT id, user_id, type, timestamp, company, partner_name, quality, description, created_at
+            SELECT id, user_id, type, timestamp, company, partner_name, location, quality, description, created_at
             FROM entries
             WHERE user_id = ?
             ORDER BY timestamp DESC, id DESC
@@ -196,7 +213,7 @@ impl Database {
     pub async fn get_entry_by_id(&self, entry_id: i64, user_id: i64) -> Result<Option<Entry>, DbError> {
         let entry = sqlx::query_as::<_, Entry>(
             r#"
-            SELECT id, user_id, type, timestamp, company, partner_name, quality, description, created_at
+            SELECT id, user_id, type, timestamp, company, partner_name, location, quality, description, created_at
             FROM entries
             WHERE id = ? AND user_id = ?;
             "#,
@@ -250,7 +267,7 @@ impl Database {
     pub async fn get_all_entries(&self, user_id: i64) -> Result<Vec<Entry>, DbError> {
         let entries = sqlx::query_as::<_, Entry>(
             r#"
-            SELECT id, user_id, type, timestamp, company, partner_name, quality, description, created_at
+            SELECT id, user_id, type, timestamp, company, partner_name, location, quality, description, created_at
             FROM entries
             WHERE user_id = ?
             ORDER BY timestamp ASC, id ASC;

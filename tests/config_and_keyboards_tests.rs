@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use orgasmus_tracker::config::Config;
 use orgasmus_tracker::keyboards::*;
-use orgasmus_tracker::models::{Entry, MAX_DESCRIPTION_LENGTH, MAX_PARTNER_NAME_LENGTH};
+use orgasmus_tracker::models::{
+    Entry, MAX_DESCRIPTION_LENGTH, MAX_LOCATION_LENGTH, MAX_PARTNER_NAME_LENGTH,
+};
 
 #[test]
 fn test_parse_allowed_user_ids() {
@@ -38,6 +40,7 @@ fn test_is_user_allowed() {
 #[test]
 fn test_validation_constants() {
     assert_eq!(MAX_PARTNER_NAME_LENGTH, 100);
+    assert_eq!(MAX_LOCATION_LENGTH, 100);
     assert_eq!(MAX_DESCRIPTION_LENGTH, 300);
 }
 
@@ -60,6 +63,16 @@ fn test_keyboards_structure() {
     assert_eq!(company_kb.inline_keyboard.len(), 2);
     assert_eq!(company_kb.inline_keyboard[0].len(), 2);
 
+    // Location keyboard
+    let location_kb = get_location_keyboard();
+    assert_eq!(location_kb.inline_keyboard.len(), 2);
+    assert_eq!(location_kb.inline_keyboard[0].len(), 2);
+    assert_eq!(location_kb.inline_keyboard[0][0].text, "Nils");
+    assert_eq!(location_kb.inline_keyboard[0][1].text, "Mika");
+    assert_eq!(location_kb.inline_keyboard[1].len(), 2);
+    assert_eq!(location_kb.inline_keyboard[1][0].text, "✅ Fertigstellen");
+    assert_eq!(location_kb.inline_keyboard[1][1].text, "❌ Abbruch");
+
     // Quality keyboard (10 items in 2 rows + actions row)
     let quality_kb = get_quality_keyboard();
     assert_eq!(quality_kb.inline_keyboard.len(), 3);
@@ -75,6 +88,7 @@ fn test_keyboards_structure() {
             timestamp: "2026-10-19 12:00".to_string(),
             company: None,
             partner_name: None,
+            location: None,
             quality: None,
             description: None,
             created_at: "now".to_string(),
@@ -86,6 +100,7 @@ fn test_keyboards_structure() {
             timestamp: "2026-10-19 13:00".to_string(),
             company: None,
             partner_name: None,
+            location: None,
             quality: None,
             description: None,
             created_at: "now".to_string(),

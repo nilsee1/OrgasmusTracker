@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 /// Maximum allowed length for partner name input.
 pub const MAX_PARTNER_NAME_LENGTH: usize = 100;
 
+/// Maximum allowed length for location input.
+pub const MAX_LOCATION_LENGTH: usize = 100;
+
 /// Maximum allowed length for description notes.
 pub const MAX_DESCRIPTION_LENGTH: usize = 300;
 
@@ -17,6 +20,7 @@ pub struct Entry {
     pub timestamp: String,
     pub company: Option<String>,
     pub partner_name: Option<String>,
+    pub location: Option<String>,
     pub quality: Option<i64>,
     pub description: Option<String>,
     pub created_at: String,
@@ -29,6 +33,7 @@ pub struct DraftEntry {
     pub timestamp: Option<String>,
     pub company: Option<String>,
     pub partner_name: Option<String>,
+    pub location: Option<String>,
     pub quality: Option<i64>,
     pub description: Option<String>,
 }

@@ -1,6 +1,8 @@
 use chrono::{Duration, TimeZone, Utc};
 use orgasmus_tracker::handlers::{Command, State};
-use orgasmus_tracker::models::{DraftEntry, MAX_DESCRIPTION_LENGTH, MAX_PARTNER_NAME_LENGTH};
+use orgasmus_tracker::models::{
+    DraftEntry, MAX_DESCRIPTION_LENGTH, MAX_LOCATION_LENGTH, MAX_PARTNER_NAME_LENGTH,
+};
 use orgasmus_tracker::utils::parse_german_datetime;
 use teloxide::utils::command::BotCommands;
 
@@ -48,6 +50,12 @@ fn test_state_last_keyboard_msg_id() {
     };
     assert_eq!(state_partner.last_keyboard_msg_id(), Some(101));
 
+    let state_location = State::Location {
+        draft: DraftEntry::default(),
+        last_keyboard_msg_id: Some(151),
+    };
+    assert_eq!(state_location.last_keyboard_msg_id(), Some(151));
+
     let state_quality = State::Quality {
         draft: DraftEntry::default(),
         last_keyboard_msg_id: Some(202),
@@ -88,6 +96,15 @@ fn test_partner_name_length_validation() {
 
     let too_long_name = "A".repeat(MAX_PARTNER_NAME_LENGTH + 1);
     assert!(too_long_name.chars().count() > MAX_PARTNER_NAME_LENGTH);
+}
+
+#[test]
+fn test_location_length_validation() {
+    let valid_loc = "L".repeat(MAX_LOCATION_LENGTH);
+    assert!(valid_loc.chars().count() <= MAX_LOCATION_LENGTH);
+
+    let too_long_loc = "L".repeat(MAX_LOCATION_LENGTH + 1);
+    assert!(too_long_loc.chars().count() > MAX_LOCATION_LENGTH);
 }
 
 #[test]

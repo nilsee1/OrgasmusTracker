@@ -45,6 +45,7 @@ fn test_format_detailed_summary() {
         timestamp: Some("2026-10-19 18:30".to_string()),
         company: Some("Mit anderer Person".to_string()),
         partner_name: Some("Julia".to_string()),
+        location: Some("Nils".to_string()),
         quality: Some(10),
         description: Some("Wunderbar!".to_string()),
     };
@@ -53,6 +54,7 @@ fn test_format_detailed_summary() {
     assert!(summary.contains("Ausführlicher Orgasmus erfolgreich gespeichert!"));
     assert!(summary.contains("19.10.2026 um 18:30 Uhr"));
     assert!(summary.contains("Mit anderer Person (Julia)"));
+    assert!(summary.contains("Ort:</b> Nils"));
     assert!(summary.contains("10/10"));
     assert!(summary.contains("Wunderbar!"));
 }
@@ -64,12 +66,14 @@ fn test_format_detailed_summary_alone() {
         timestamp: Some("2026-10-19 18:30".to_string()),
         company: Some("Alleine".to_string()),
         partner_name: None,
+        location: None,
         quality: Some(8),
         description: None,
     };
 
     let summary = format_detailed_summary(&draft);
     assert!(summary.contains("Begleitung:</b> Alleine"));
+    assert!(!summary.contains("Ort:"));
     assert!(summary.contains("8/10"));
     assert!(summary.contains("<i>Keine</i>"));
 }
@@ -90,6 +94,7 @@ fn test_format_entries_list_text_truncation() {
         timestamp: "2026-10-19 18:30".to_string(),
         company: Some("Alleine".to_string()),
         partner_name: None,
+        location: None,
         quality: Some(9),
         description: Some(long_desc.clone()),
         created_at: "2026-10-19T18:30:00Z".to_string(),
@@ -110,6 +115,7 @@ fn test_format_entries_list_text_escaping() {
         timestamp: "2026-10-19 18:30".to_string(),
         company: Some("Mit anderer Person".to_string()),
         partner_name: Some("<script>bad()</script>".to_string()),
+        location: Some("<b>Home</b>".to_string()),
         quality: Some(5),
         description: Some("<b>Note & \"Quotes\"</b>".to_string()),
         created_at: "2026-10-19T18:30:00Z".to_string(),
@@ -118,6 +124,8 @@ fn test_format_entries_list_text_escaping() {
     let text = format_entries_list_text(&[entry]);
     assert!(!text.contains("<script>"));
     assert!(text.contains("&lt;script&gt;bad()&lt;/script&gt;"));
+    assert!(!text.contains("<b>Home</b>"));
+    assert!(text.contains("&lt;b&gt;Home&lt;/b&gt;"));
 }
 
 #[test]
@@ -137,7 +145,7 @@ fn test_generate_csv_export_empty() {
     // Verify UTF-8 BOM
     assert!(content.starts_with('\u{FEFF}'));
     // Verify header line
-    assert!(content.contains("ID;Typ;Datum_Uhrzeit;Begleitung;Partner;Qualitaet;Notiz;Erstellt_Am\r\n"));
+    assert!(content.contains("ID;Typ;Datum_Uhrzeit;Begleitung;Partner;Ort;Qualitaet;Notiz;Erstellt_Am\r\n"));
     let lines: Vec<&str> = content.split("\r\n").filter(|s| !s.is_empty()).collect();
     assert_eq!(lines.len(), 1); // Header only
 }
@@ -152,6 +160,7 @@ fn test_generate_csv_export_records() {
             timestamp: "2026-10-19 12:00".to_string(),
             company: None,
             partner_name: None,
+            location: None,
             quality: None,
             description: None,
             created_at: "2026-10-19T12:00:00Z".to_string(),
@@ -163,6 +172,7 @@ fn test_generate_csv_export_records() {
             timestamp: "2026-10-20 18:30".to_string(),
             company: Some("Mit anderer Person".to_string()),
             partner_name: Some("Julia; Sarah".to_string()),
+            location: Some("Mika; Nils".to_string()),
             quality: Some(9),
             description: Some("Toll & \"wundervoll\"\nZweite Zeile".to_string()),
             created_at: "2026-10-20T18:35:00Z".to_string(),
@@ -173,8 +183,8 @@ fn test_generate_csv_export_records() {
     let content = String::from_utf8(bytes).unwrap();
 
     assert!(content.starts_with('\u{FEFF}'));
-    assert!(content.contains("1;simple;2026-10-19 12:00;;;;;2026-10-19T12:00:00Z\r\n"));
-    assert!(content.contains("2;detailed;2026-10-20 18:30;Mit anderer Person;\"Julia; Sarah\";9;\"Toll & \"\"wundervoll\"\"\nZweite Zeile\";2026-10-20T18:35:00Z\r\n"));
+    assert!(content.contains("1;simple;2026-10-19 12:00;;;;;;2026-10-19T12:00:00Z\r\n"));
+    assert!(content.contains("2;detailed;2026-10-20 18:30;Mit anderer Person;\"Julia; Sarah\";\"Mika; Nils\";9;\"Toll & \"\"wundervoll\"\"\nZweite Zeile\";2026-10-20T18:35:00Z\r\n"));
 }
 
 #[test]

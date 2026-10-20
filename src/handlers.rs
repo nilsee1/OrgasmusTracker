@@ -13,7 +13,9 @@ use teloxide::utils::command::BotCommands;
 use crate::config::Config;
 use crate::database::Database;
 use crate::keyboards::*;
-use crate::models::{DraftEntry, Entry, MAX_DESCRIPTION_LENGTH, MAX_PARTNER_NAME_LENGTH};
+use crate::models::{
+    DraftEntry, Entry, MAX_DESCRIPTION_LENGTH, MAX_LOCATION_LENGTH, MAX_PARTNER_NAME_LENGTH,
+};
 use crate::utils::{
     format_detailed_summary, format_entries_list_text, format_statistics_text,
     generate_csv_export, parse_german_datetime,
@@ -55,6 +57,10 @@ pub enum State {
         draft: DraftEntry,
         last_keyboard_msg_id: Option<i32>,
     },
+    Location {
+        draft: DraftEntry,
+        last_keyboard_msg_id: Option<i32>,
+    },
     Quality {
         draft: DraftEntry,
         last_keyboard_msg_id: Option<i32>,
@@ -72,6 +78,7 @@ impl State {
             | State::DateTime { last_keyboard_msg_id, .. }
             | State::Company { last_keyboard_msg_id, .. }
             | State::PartnerName { last_keyboard_msg_id, .. }
+            | State::Location { last_keyboard_msg_id, .. }
             | State::Quality { last_keyboard_msg_id, .. }
             | State::Description { last_keyboard_msg_id, .. } => *last_keyboard_msg_id,
             State::Start => None,
@@ -247,6 +254,7 @@ async fn persist_draft_and_send_summary(
         timestamp,
         draft.company.as_deref(),
         draft.partner_name.as_deref(),
+        draft.location.as_deref(),
         draft.quality,
         draft.description.as_deref(),
         Some(&created_at),
@@ -389,6 +397,63 @@ pub async fn handle_partner_name_message(
     let sent = bot
         .send_message(
             msg.chat.id,
+            "📍 Wo fand es statt? Wähle einen Button oder gib den Ort als Text ein:",
+        )
+        .reply_markup(get_location_keyboard())
+        .await?;
+
+    dialogue
+        .update(State::Location {
+            draft: updated_draft,
+            last_keyboard_msg_id: Some(sent.id.0),
+        })
+        .await?;
+
+    Ok(())
+}
+
+/// Handle text message in State::Location.
+pub async fn handle_location_message(
+    bot: Bot,
+    msg: Message,
+    dialogue: MyDialogue,
+    (draft, last_msg_id): (DraftEntry, Option<i32>),
+) -> HandlerResult {
+    clear_previous_keyboard(&bot, msg.chat.id, last_msg_id).await;
+    let location_text = msg.text().unwrap_or("").trim().to_string();
+
+    if location_text.chars().count() > MAX_LOCATION_LENGTH {
+        let sent = bot
+            .send_message(
+                msg.chat.id,
+                format!(
+                    "⚠️ <b>Ort zu lang!</b>\n\n\
+                    Der Ort darf maximal {} Zeichen lang sein (aktuell: {}). Bitte gib einen kürzeren Ort ein:",
+                    MAX_LOCATION_LENGTH,
+                    location_text.chars().count()
+                ),
+            )
+            .parse_mode(ParseMode::Html)
+            .reply_markup(get_location_keyboard())
+            .await?;
+
+        dialogue
+            .update(State::Location {
+                draft,
+                last_keyboard_msg_id: Some(sent.id.0),
+            })
+            .await?;
+        return Ok(());
+    }
+
+    let mut updated_draft = draft;
+    if !location_text.is_empty() {
+        updated_draft.location = Some(location_text);
+    }
+
+    let sent = bot
+        .send_message(
+            msg.chat.id,
             "⭐ Wie war die Qualität auf einer Skala von 1 bis 10 (10 = das Beste)?",
         )
         .reply_markup(get_quality_keyboard())
@@ -488,6 +553,7 @@ pub async fn handle_callback_query(
             State::DateTime { draft, .. }
             | State::Company { draft, .. }
             | State::PartnerName { draft, .. }
+            | State::Location { draft, .. }
             | State::Quality { draft, .. }
             | State::Description { draft, .. } => draft,
             _ => DraftEntry {
@@ -507,6 +573,7 @@ pub async fn handle_callback_query(
             timestamp,
             draft.company.as_deref(),
             draft.partner_name.as_deref(),
+            draft.location.as_deref(),
             draft.quality,
             draft.description.as_deref(),
             Some(&created_at),
@@ -532,6 +599,7 @@ pub async fn handle_callback_query(
             user_id,
             "simple",
             &timestamp,
+            None,
             None,
             None,
             None,
@@ -632,6 +700,38 @@ pub async fn handle_callback_query(
         bot.edit_message_text(
             chat_id,
             message_id,
+            "📍 Wo fand es statt? Wähle einen Button oder gib den Ort als Text ein:",
+        )
+        .reply_markup(get_location_keyboard())
+        .await?;
+
+        dialogue
+            .update(State::Location {
+                draft,
+                last_keyboard_msg_id: Some(message_id.0),
+            })
+            .await?;
+        return Ok(());
+    }
+
+    // 7. Location: Nils or Mika
+    if data == LOCATION_NILS || data == LOCATION_MIKA {
+        bot.answer_callback_query(q.id.clone()).await?;
+        let current_state = dialogue.get().await?.unwrap_or_default();
+        let mut draft = match current_state {
+            State::Location { draft, .. } => draft,
+            _ => DraftEntry {
+                r#type: "detailed".to_string(),
+                ..Default::default()
+            },
+        };
+
+        let loc_name = if data == LOCATION_NILS { "Nils" } else { "Mika" };
+        draft.location = Some(loc_name.to_string());
+
+        bot.edit_message_text(
+            chat_id,
+            message_id,
             "⭐ Wie war die Qualität auf einer Skala von 1 bis 10 (10 = das Beste)?",
         )
         .reply_markup(get_quality_keyboard())
@@ -646,7 +746,7 @@ pub async fn handle_callback_query(
         return Ok(());
     }
 
-    // 7. Company: Partner
+    // 8. Company: Partner
     if data == COMPANY_PARTNER {
         bot.answer_callback_query(q.id.clone()).await?;
         let current_state = dialogue.get().await?.unwrap_or_default();

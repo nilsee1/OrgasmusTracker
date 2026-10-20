@@ -12,6 +12,9 @@ pub const TIME_NOW: &str = "TIME_NOW";
 pub const COMPANY_ALONE: &str = "COMPANY_ALONE";
 pub const COMPANY_PARTNER: &str = "COMPANY_PARTNER";
 
+pub const LOCATION_NILS: &str = "LOC_NILS";
+pub const LOCATION_MIKA: &str = "LOC_MIKA";
+
 pub const QUALITY_PREFIX: &str = "QUALITY_";
 
 pub const ACTION_FINISH: &str = "ACTION_FINISH";
@@ -59,6 +62,19 @@ pub fn get_partner_name_keyboard() -> InlineKeyboardMarkup {
         InlineKeyboardButton::callback("✅ Fertigstellen", ACTION_FINISH),
         InlineKeyboardButton::callback("❌ Abbruch", ACTION_CANCEL),
     ]])
+}
+
+pub fn get_location_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback("Nils", LOCATION_NILS),
+            InlineKeyboardButton::callback("Mika", LOCATION_MIKA),
+        ],
+        vec![
+            InlineKeyboardButton::callback("✅ Fertigstellen", ACTION_FINISH),
+            InlineKeyboardButton::callback("❌ Abbruch", ACTION_CANCEL),
+        ],
+    ])
 }
 
 pub fn get_quality_keyboard() -> InlineKeyboardMarkup {
