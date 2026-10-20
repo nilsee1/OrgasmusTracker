@@ -10,6 +10,10 @@ fn test_command_parsing() {
     assert_eq!(Command::parse("/orgasmus", "bot").unwrap(), Command::Orgasmus);
     assert_eq!(Command::parse("/liste", "bot").unwrap(), Command::Liste);
     assert_eq!(Command::parse("/letzte", "bot").unwrap(), Command::Letzte);
+    assert_eq!(Command::parse("/list", "bot").unwrap(), Command::List);
+    assert_eq!(Command::parse("/statistik", "bot").unwrap(), Command::Statistik);
+    assert_eq!(Command::parse("/stats", "bot").unwrap(), Command::Stats);
+    assert_eq!(Command::parse("/export", "bot").unwrap(), Command::Export);
     assert_eq!(Command::parse("/hilfe", "bot").unwrap(), Command::Hilfe);
     assert_eq!(Command::parse("/help", "bot").unwrap(), Command::Help);
     assert_eq!(Command::parse("/abbrechen", "bot").unwrap(), Command::Abbrechen);

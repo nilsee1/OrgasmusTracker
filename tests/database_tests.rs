@@ -216,3 +216,190 @@ async fn test_delete_entries_isolation() {
     assert!(db.get_entry_by_id(id_b, 800).await.unwrap().is_some());
 }
 
+#[tokio::test]
+async fn test_get_all_entries() {
+    let (db, _tmp) = create_test_db().await;
+
+    // Initially empty
+    let empty = db.get_all_entries(100).await.unwrap();
+    assert!(empty.is_empty());
+
+    // Insert entries out of chronological order
+    db.add_entry(100, "simple", "2026-10-19 12:00", None, None, None, None, None)
+        .await
+        .unwrap();
+    db.add_entry(100, "simple", "2026-10-18 09:00", None, None, None, None, None)
+        .await
+        .unwrap();
+    db.add_entry(100, "simple", "2026-10-20 15:30", None, None, None, None, None)
+        .await
+        .unwrap();
+
+    // Another user's entry
+    db.add_entry(200, "simple", "2026-10-19 14:00", None, None, None, None, None)
+        .await
+        .unwrap();
+
+    let entries = db.get_all_entries(100).await.unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].timestamp, "2026-10-18 09:00");
+    assert_eq!(entries[1].timestamp, "2026-10-19 12:00");
+    assert_eq!(entries[2].timestamp, "2026-10-20 15:30");
+
+    let entries_other = db.get_all_entries(200).await.unwrap();
+    assert_eq!(entries_other.len(), 1);
+    assert_eq!(entries_other[0].timestamp, "2026-10-19 14:00");
+}
+
+#[tokio::test]
+async fn test_get_statistics_empty() {
+    let (db, _tmp) = create_test_db().await;
+    let tz = chrono_tz::Europe::Berlin;
+    let now = chrono::TimeZone::with_ymd_and_hms(&tz, 2026, 10, 20, 12, 0, 0).unwrap();
+
+    let stats = db.get_statistics_at(999, now).await.unwrap();
+    assert_eq!(stats.total_count, 0);
+    assert_eq!(stats.count_last_7_days, 0);
+    assert_eq!(stats.count_last_30_days, 0);
+    assert_eq!(stats.count_current_year, 0);
+    assert_eq!(stats.count_last_365_days, 0);
+    assert_eq!(stats.count_previous_year, 0);
+    assert_eq!(stats.count_alone, 0);
+    assert_eq!(stats.count_partner, 0);
+    assert_eq!(stats.avg_quality, None);
+}
+
+#[tokio::test]
+async fn test_get_statistics_aggregation() {
+    let (db, _tmp) = create_test_db().await;
+    let tz = chrono_tz::Europe::Berlin;
+    let now = chrono::TimeZone::with_ymd_and_hms(&tz, 2026, 10, 20, 12, 0, 0).unwrap();
+    let user_id = 12345;
+
+    // Entry 1: Today (within 7 days, 30 days, current year, last 365 days) - Alone, quality 8
+    db.add_entry(
+        user_id,
+        "detailed",
+        "2026-10-20 10:00",
+        Some("Alleine"),
+        None,
+        Some(8),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Entry 2: 5 days ago (within 7 days, 30 days, current year, last 365 days) - Partner, quality 9
+    db.add_entry(
+        user_id,
+        "detailed",
+        "2026-10-15 14:00",
+        Some("Mit anderer Person"),
+        Some("Alex"),
+        Some(9),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Entry 3: 15 days ago (within 30 days, current year, last 365 days; not 7 days) - Simple, no quality
+    db.add_entry(
+        user_id,
+        "simple",
+        "2026-10-05 08:30",
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Entry 4: 60 days ago (current year, last 365 days; not 30 days) - Partner, quality 7
+    db.add_entry(
+        user_id,
+        "detailed",
+        "2026-08-20 22:00",
+        Some("Mit anderer Person"),
+        Some("Sam"),
+        Some(7),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Entry 5: Previous calendar year (2025-11-15, within last 365 days and previous_year) - Alone, quality 10
+    db.add_entry(
+        user_id,
+        "detailed",
+        "2025-11-15 19:00",
+        Some("Alleine"),
+        None,
+        Some(10),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Entry 6: Previous year but > 365 days ago (2025-05-01, previous year; NOT last 365 days) - Simple
+    db.add_entry(
+        user_id,
+        "simple",
+        "2025-05-01 12:00",
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Entry 7: 2024 (two years ago - only in total_count) - Partner, quality 6
+    db.add_entry(
+        user_id,
+        "detailed",
+        "2024-06-01 12:00",
+        Some("Mit anderer Person"),
+        Some("Sam"),
+        Some(6),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Different user entry (must be completely ignored)
+    db.add_entry(
+        99999,
+        "detailed",
+        "2026-10-20 11:00",
+        Some("Alleine"),
+        None,
+        Some(1),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let stats = db.get_statistics_at(user_id, now).await.unwrap();
+
+    assert_eq!(stats.total_count, 7);
+    assert_eq!(stats.count_last_7_days, 2); // Entries 1, 2
+    assert_eq!(stats.count_last_30_days, 3); // Entries 1, 2, 3
+    assert_eq!(stats.count_current_year, 4); // Entries 1, 2, 3, 4
+    assert_eq!(stats.count_last_365_days, 5); // Entries 1, 2, 3, 4, 5
+    assert_eq!(stats.count_previous_year, 2); // Entries 5, 6
+    assert_eq!(stats.count_alone, 2); // Entries 1, 5
+    assert_eq!(stats.count_partner, 3); // Entries 2, 4, 7
+
+    // Quality ratings for user_id: 8, 9, 7, 10, 6 -> sum = 40, count = 5 -> average = 8.0
+    assert_eq!(stats.avg_quality, Some(8.0));
+}
+

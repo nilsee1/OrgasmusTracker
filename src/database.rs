@@ -3,10 +3,10 @@
 use std::path::Path;
 use std::str::FromStr;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Error as SqlxError, SqlitePool};
+use sqlx::{Error as SqlxError, Row, SqlitePool};
 use thiserror::Error;
 
-use crate::models::Entry;
+use crate::models::{Entry, StatsSummary};
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -26,11 +26,17 @@ pub enum DbError {
 #[derive(Clone, Debug)]
 pub struct Database {
     pool: SqlitePool,
+    timezone: chrono_tz::Tz,
 }
 
 impl Database {
-    /// Create a new Database connection pool and ensure parent directory exists.
+    /// Create a new Database connection pool with default Europe/Berlin timezone.
     pub async fn connect(db_path: &str) -> Result<Self, DbError> {
+        Self::connect_with_tz(db_path, chrono_tz::Europe::Berlin).await
+    }
+
+    /// Create a new Database connection pool with a specific timezone.
+    pub async fn connect_with_tz(db_path: &str, tz: chrono_tz::Tz) -> Result<Self, DbError> {
         if let Some(parent) = Path::new(db_path).parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
                 tokio::fs::create_dir_all(parent).await?;
@@ -45,14 +51,28 @@ impl Database {
             .connect_with(options)
             .await?;
 
-        let db = Self { pool };
+        let db = Self { pool, timezone: tz };
         db.init_db().await?;
         Ok(db)
     }
 
     /// Construct Database from an existing pool (useful for in-memory testing).
     pub fn from_pool(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            timezone: chrono_tz::Europe::Berlin,
+        }
+    }
+
+    /// Update or override the timezone configured for statistics.
+    pub fn with_timezone(mut self, tz: chrono_tz::Tz) -> Self {
+        self.timezone = tz;
+        self
+    }
+
+    /// Access the configured timezone.
+    pub fn timezone(&self) -> chrono_tz::Tz {
+        self.timezone
     }
 
     /// Access the underlying connection pool.
@@ -224,5 +244,104 @@ impl Database {
 
         let result = query.execute(&self.pool).await?;
         Ok(result.rows_affected())
+    }
+
+    /// Retrieve all entries belonging to user_id, ordered chronologically (timestamp ASC, id ASC).
+    pub async fn get_all_entries(&self, user_id: i64) -> Result<Vec<Entry>, DbError> {
+        let entries = sqlx::query_as::<_, Entry>(
+            r#"
+            SELECT id, user_id, type, timestamp, company, partner_name, quality, description, created_at
+            FROM entries
+            WHERE user_id = ?
+            ORDER BY timestamp ASC, id ASC;
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(entries)
+    }
+
+    /// Retrieve aggregated statistics for user_id based on configured timezone.
+    pub async fn get_statistics(&self, user_id: i64) -> Result<StatsSummary, DbError> {
+        let now = chrono::Utc::now().with_timezone(&self.timezone);
+        self.get_statistics_at(user_id, now).await
+    }
+
+    /// Retrieve aggregated statistics at a specific reference time (useful for deterministic tests).
+    pub async fn get_statistics_at(
+        &self,
+        user_id: i64,
+        now: chrono::DateTime<chrono_tz::Tz>,
+    ) -> Result<StatsSummary, DbError> {
+        use chrono::Datelike;
+
+        let ts_7_days = (now - chrono::Duration::days(7))
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        let ts_30_days = (now - chrono::Duration::days(30))
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        let ts_365_days = (now - chrono::Duration::days(365))
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+
+        let current_year = now.year();
+        let ts_curr_year_start = format!("{:04}-01-01 00:00", current_year);
+
+        let prev_year = current_year - 1;
+        let ts_prev_year_start = format!("{:04}-01-01 00:00", prev_year);
+        let ts_prev_year_end = format!("{:04}-12-31 23:59:59", prev_year);
+
+        let row = sqlx::query(
+            r#"
+            SELECT
+                CAST(COUNT(*) AS INTEGER) AS total_count,
+                CAST(COALESCE(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END), 0) AS INTEGER) AS count_7_days,
+                CAST(COALESCE(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END), 0) AS INTEGER) AS count_30_days,
+                CAST(COALESCE(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END), 0) AS INTEGER) AS count_current_year,
+                CAST(COALESCE(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END), 0) AS INTEGER) AS count_365_days,
+                CAST(COALESCE(SUM(CASE WHEN timestamp >= ? AND timestamp <= ? THEN 1 ELSE 0 END), 0) AS INTEGER) AS count_prev_year,
+                CAST(COALESCE(SUM(CASE WHEN company = 'Alleine' THEN 1 ELSE 0 END), 0) AS INTEGER) AS count_alone,
+                CAST(COALESCE(SUM(CASE WHEN company = 'Mit anderer Person' THEN 1 ELSE 0 END), 0) AS INTEGER) AS count_partner,
+                AVG(quality) AS avg_quality
+            FROM entries
+            WHERE user_id = ?;
+            "#,
+        )
+        .bind(&ts_7_days)
+        .bind(&ts_30_days)
+        .bind(&ts_curr_year_start)
+        .bind(&ts_365_days)
+        .bind(&ts_prev_year_start)
+        .bind(&ts_prev_year_end)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let total_count: i64 = row.try_get("total_count").unwrap_or(0);
+        let count_last_7_days: i64 = row.try_get("count_7_days").unwrap_or(0);
+        let count_last_30_days: i64 = row.try_get("count_30_days").unwrap_or(0);
+        let count_current_year: i64 = row.try_get("count_current_year").unwrap_or(0);
+        let count_last_365_days: i64 = row.try_get("count_365_days").unwrap_or(0);
+        let count_previous_year: i64 = row.try_get("count_prev_year").unwrap_or(0);
+        let count_alone: i64 = row.try_get("count_alone").unwrap_or(0);
+        let count_partner: i64 = row.try_get("count_partner").unwrap_or(0);
+        let raw_avg: Option<f64> = row.try_get("avg_quality").ok().flatten();
+
+        let avg_quality = raw_avg.map(|q| (q * 10.0).round() / 10.0);
+
+        Ok(StatsSummary {
+            total_count,
+            count_last_7_days,
+            count_last_30_days,
+            count_current_year,
+            count_last_365_days,
+            count_previous_year,
+            count_alone,
+            count_partner,
+            avg_quality,
+        })
     }
 }

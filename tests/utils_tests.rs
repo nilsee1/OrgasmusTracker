@@ -1,6 +1,7 @@
-use orgasmus_tracker::models::{DraftEntry, Entry, MAX_DESCRIPTION_LENGTH};
+use orgasmus_tracker::models::{DraftEntry, Entry, StatsSummary, MAX_DESCRIPTION_LENGTH};
 use orgasmus_tracker::utils::{
-    format_detailed_summary, format_entries_list_text, format_timestamp_display,
+    escape_csv_field, format_detailed_summary, format_entries_list_text,
+    format_statistics_text, format_timestamp_display, generate_csv_export,
     parse_german_datetime,
 };
 
@@ -117,5 +118,115 @@ fn test_format_entries_list_text_escaping() {
     let text = format_entries_list_text(&[entry]);
     assert!(!text.contains("<script>"));
     assert!(text.contains("&lt;script&gt;bad()&lt;/script&gt;"));
+}
+
+#[test]
+fn test_escape_csv_field() {
+    assert_eq!(escape_csv_field("Hello World"), "Hello World");
+    assert_eq!(escape_csv_field("Hello;World"), "\"Hello;World\"");
+    assert_eq!(escape_csv_field("Hello \"World\""), "\"Hello \"\"World\"\"\"");
+    assert_eq!(escape_csv_field("Line1\nLine2"), "\"Line1\nLine2\"");
+    assert_eq!(escape_csv_field("Line1\r\nLine2"), "\"Line1\r\nLine2\"");
+    assert_eq!(escape_csv_field("A;\"B\"\nC"), "\"A;\"\"B\"\"\nC\"");
+}
+
+#[test]
+fn test_generate_csv_export_empty() {
+    let bytes = generate_csv_export(&[]);
+    let content = String::from_utf8(bytes).unwrap();
+    // Verify UTF-8 BOM
+    assert!(content.starts_with('\u{FEFF}'));
+    // Verify header line
+    assert!(content.contains("ID;Typ;Datum_Uhrzeit;Begleitung;Partner;Qualitaet;Notiz;Erstellt_Am\r\n"));
+    let lines: Vec<&str> = content.split("\r\n").filter(|s| !s.is_empty()).collect();
+    assert_eq!(lines.len(), 1); // Header only
+}
+
+#[test]
+fn test_generate_csv_export_records() {
+    let entries = vec![
+        Entry {
+            id: 1,
+            user_id: 100,
+            r#type: "simple".to_string(),
+            timestamp: "2026-10-19 12:00".to_string(),
+            company: None,
+            partner_name: None,
+            quality: None,
+            description: None,
+            created_at: "2026-10-19T12:00:00Z".to_string(),
+        },
+        Entry {
+            id: 2,
+            user_id: 100,
+            r#type: "detailed".to_string(),
+            timestamp: "2026-10-20 18:30".to_string(),
+            company: Some("Mit anderer Person".to_string()),
+            partner_name: Some("Julia; Sarah".to_string()),
+            quality: Some(9),
+            description: Some("Toll & \"wundervoll\"\nZweite Zeile".to_string()),
+            created_at: "2026-10-20T18:35:00Z".to_string(),
+        },
+    ];
+
+    let bytes = generate_csv_export(&entries);
+    let content = String::from_utf8(bytes).unwrap();
+
+    assert!(content.starts_with('\u{FEFF}'));
+    assert!(content.contains("1;simple;2026-10-19 12:00;;;;;2026-10-19T12:00:00Z\r\n"));
+    assert!(content.contains("2;detailed;2026-10-20 18:30;Mit anderer Person;\"Julia; Sarah\";9;\"Toll & \"\"wundervoll\"\"\nZweite Zeile\";2026-10-20T18:35:00Z\r\n"));
+}
+
+#[test]
+fn test_format_statistics_text_empty() {
+    let stats = StatsSummary::default();
+    let text = format_statistics_text(&stats, 2026);
+    assert!(text.contains("Bisher sind noch keine Einträge vorhanden"));
+}
+
+#[test]
+fn test_format_statistics_text_populated() {
+    let stats = StatsSummary {
+        total_count: 42,
+        count_last_7_days: 5,
+        count_last_30_days: 18,
+        count_current_year: 35,
+        count_last_365_days: 40,
+        count_previous_year: 7,
+        count_alone: 25,
+        count_partner: 17,
+        avg_quality: Some(8.7),
+    };
+
+    let text = format_statistics_text(&stats, 2026);
+    assert!(text.contains("📊 <b>Persönliche Statistiken</b>"));
+    assert!(text.contains("Gesamt: <b>42</b>"));
+    assert!(text.contains("Letzte 7 Tage: <b>5</b>"));
+    assert!(text.contains("Letzte 30 Tage: <b>18</b>"));
+    assert!(text.contains("Laufendes Jahr (2026): <b>35</b>"));
+    assert!(text.contains("Letzte 365 Tage: <b>40</b>"));
+    assert!(text.contains("Vorjahr (2025): <b>7</b>"));
+    assert!(text.contains("👤 Alleine: <b>25</b>"));
+    assert!(text.contains("👥 Mit anderer Person: <b>17</b>"));
+    assert!(text.contains("⭐ <b>8.7 / 10</b>"));
+}
+
+#[test]
+fn test_format_statistics_text_no_quality_and_no_prev_year() {
+    let stats = StatsSummary {
+        total_count: 1,
+        count_last_7_days: 1,
+        count_last_30_days: 1,
+        count_current_year: 1,
+        count_last_365_days: 1,
+        count_previous_year: 0,
+        count_alone: 0,
+        count_partner: 0,
+        avg_quality: None,
+    };
+
+    let text = format_statistics_text(&stats, 2026);
+    assert!(!text.contains("Vorjahr"));
+    assert!(text.contains("<i>Keine Angabe</i>"));
 }
 

@@ -33,3 +33,18 @@ pub struct DraftEntry {
     pub description: Option<String>,
 }
 
+/// Aggregated user statistics summary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct StatsSummary {
+    pub total_count: i64,
+    pub count_last_7_days: i64,
+    pub count_last_30_days: i64,
+    pub count_current_year: i64,
+    pub count_last_365_days: i64,
+    pub count_previous_year: i64,
+    pub count_alone: i64,
+    pub count_partner: i64,
+    pub avg_quality: Option<f64>,
+}
+
+

@@ -3,10 +3,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use chrono::TimeZone;
+use chrono::{Datelike, TimeZone};
 use teloxide::prelude::*;
 use teloxide::types::{
-    CallbackQuery, InlineKeyboardMarkup, MessageId, ParseMode,
+    CallbackQuery, InlineKeyboardMarkup, InputFile, MessageId, ParseMode,
 };
 use teloxide::utils::command::BotCommands;
 
@@ -15,7 +15,8 @@ use crate::database::Database;
 use crate::keyboards::*;
 use crate::models::{DraftEntry, Entry, MAX_DESCRIPTION_LENGTH, MAX_PARTNER_NAME_LENGTH};
 use crate::utils::{
-    format_detailed_summary, format_entries_list_text, parse_german_datetime,
+    format_detailed_summary, format_entries_list_text, format_statistics_text,
+    generate_csv_export, parse_german_datetime,
 };
 
 #[derive(BotCommands, Clone, Debug, PartialEq, Eq)]
@@ -28,6 +29,9 @@ pub enum Command {
     Liste,
     Letzte,
     List,
+    Statistik,
+    Stats,
+    Export,
     Abbrechen,
     Cancel,
 }
@@ -101,7 +105,7 @@ pub async fn handle_command(
     msg: Message,
     cmd: Command,
     dialogue: MyDialogue,
-    _config: Arc<Config>,
+    config: Arc<Config>,
     db: Arc<Database>,
 ) -> HandlerResult {
     let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
@@ -122,6 +126,8 @@ pub async fn handle_command(
                 <b>Verfügbare Befehle:</b>\n\
                 • /orgasmus – Neuen Orgasmus erfassen (Einfach oder Ausführlich)\n\
                 • /liste – Die letzten 10 Einträge anzeigen\n\
+                • /statistik – Persönliche Auswertungen &amp; Kennzahlen anzeigen\n\
+                • /export – Alle Einträge als CSV-Datei exportieren\n\
                 • /hilfe – Befehlsübersicht &amp; Hilfe anzeigen\n\
                 • /abbrechen – Laufenden Vorgang abbrechen",
                 html_escape::encode_text(first_name)
@@ -138,6 +144,8 @@ pub async fn handle_command(
                   - <b>Ausführlich:</b> Schrittweise Erfassung von Zeit, Begleitung, Qualität (1-10) und Notizen.\n\
                   - In jedem Schritt kannst du mit <b>✅ Fertigstellen</b> vorzeitig speichern oder mit <b>❌ Abbruch</b> abbrechen.\n\n\
                 • <code>/liste</code> (oder <code>/letzte</code>): Zeigt die letzten 10 protokollierten Einträge an.\n\
+                • <code>/statistik</code> (oder <code>/stats</code>): Zeigt aggregierte Kennzahlen und Statistiken an.\n\
+                • <code>/export</code>: Sendet alle deine Daten als CSV-Datei direkt in diesen Chat.\n\
                 • <code>/abbrechen</code>: Bricht den aktuellen Dialog ab.\n\n\
                 🔒 <i>Alle Daten werden lokal in deiner sicheren SQLite-Datenbank gespeichert.</i>";
             bot.send_message(msg.chat.id, text)
@@ -171,6 +179,42 @@ pub async fn handle_command(
                     .parse_mode(ParseMode::Html)
                     .reply_markup(get_liste_main_keyboard())
                     .await?;
+            }
+        }
+        Command::Statistik | Command::Stats => {
+            dialogue.exit().await?;
+            let stats = db.get_statistics(user_id).await?;
+            let now = chrono::Utc::now().with_timezone(&config.timezone);
+            let text = format_statistics_text(&stats, now.year());
+            bot.send_message(msg.chat.id, text)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+        Command::Export => {
+            dialogue.exit().await?;
+            let entries = db.get_all_entries(user_id).await?;
+            if entries.is_empty() {
+                bot.send_message(
+                    msg.chat.id,
+                    "ℹ️ <b>Keine Daten vorhanden.</b>\n\nEs wurden noch keine Einträge zum Exportieren gefunden.",
+                )
+                .parse_mode(ParseMode::Html)
+                .await?;
+            } else {
+                let csv_bytes = generate_csv_export(&entries);
+                let now = chrono::Utc::now().with_timezone(&config.timezone);
+                let filename = format!("orgasmus_tracker_export_{}.csv", now.format("%Y-%m-%d"));
+                let caption = format!(
+                    "📄 <b>Daten-Export</b>\n\nHier ist deine CSV-Datei mit allen {} erfassten Einträgen.",
+                    entries.len()
+                );
+                bot.send_document(
+                    msg.chat.id,
+                    InputFile::memory(csv_bytes).file_name(filename),
+                )
+                .caption(caption)
+                .parse_mode(ParseMode::Html)
+                .await?;
             }
         }
         Command::Abbrechen | Command::Cancel => {

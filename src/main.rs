@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Starte Orgasmus-Tracker Telegram Bot in Rust...");
 
     let config = Arc::new(Config::from_env()?);
-    let db = Arc::new(Database::connect(&config.db_path).await?);
+    let db = Arc::new(Database::connect_with_tz(&config.db_path, config.timezone).await?);
 
     let bot = Bot::new(&config.bot_token);
 
@@ -27,6 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bot_commands = vec![
         BotCommand::new("orgasmus", "Neuen Orgasmus erfassen"),
         BotCommand::new("liste", "Letzte 10 Einträge anzeigen"),
+        BotCommand::new("statistik", "Persönliche Statistiken anzeigen"),
+        BotCommand::new("export", "Alle Daten als CSV exportieren"),
         BotCommand::new("hilfe", "Hilfe und Befehle anzeigen"),
         BotCommand::new("abbrechen", "Laufenden Vorgang abbrechen"),
     ];
