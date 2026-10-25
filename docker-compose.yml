@@ -10,6 +10,7 @@ services:
       - RUST_LOG=info
       - TZ=${TZ:-Europe/Berlin}
       - DB_PATH=/app/data/tracker.db
+      - LOCATION_PRESETS=${LOCATION_PRESETS:-} # Optional: Kommagetrennte Schnellwahltasten, z.B. Home,Hotel
     volumes:
       - ./data:/app/data
     logging:

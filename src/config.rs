@@ -5,6 +5,8 @@ use std::env;
 use std::str::FromStr;
 use thiserror::Error;
 
+use crate::models::MAX_LOCATION_LENGTH;
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("TELEGRAM_BOT_TOKEN ist nicht gesetzt oder leer. Bitte in der .env angeben.")]
@@ -17,6 +19,7 @@ pub struct Config {
     pub allowed_user_ids: HashSet<i64>,
     pub db_path: String,
     pub timezone: chrono_tz::Tz,
+    pub location_presets: Vec<String>,
 }
 
 impl Config {
@@ -50,12 +53,37 @@ impl Config {
             chrono_tz::Europe::Berlin
         });
 
+        let raw_presets = env::var("LOCATION_PRESETS").unwrap_or_default();
+        let location_presets = Self::parse_location_presets(&raw_presets);
+
         Ok(Self {
             bot_token,
             allowed_user_ids,
             db_path,
             timezone,
+            location_presets,
         })
+    }
+
+    /// Parse comma-separated location presets, trimming whitespace and filtering empty/invalid entries.
+    pub fn parse_location_presets(raw: &str) -> Vec<String> {
+        let mut presets = Vec::new();
+        for item in raw.split(',') {
+            let cleaned = item.trim();
+            if cleaned.is_empty() {
+                continue;
+            }
+            if cleaned.chars().count() > MAX_LOCATION_LENGTH {
+                log::warn!(
+                    "Location preset überschreitet maximale Länge ({}) und wird ignoriert: '{}'",
+                    MAX_LOCATION_LENGTH,
+                    cleaned
+                );
+                continue;
+            }
+            presets.push(cleaned.to_string());
+        }
+        presets
     }
 
     /// Parse comma-separated user IDs into a HashSet of integers.

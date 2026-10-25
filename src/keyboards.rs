@@ -12,8 +12,7 @@ pub const TIME_NOW: &str = "TIME_NOW";
 pub const COMPANY_ALONE: &str = "COMPANY_ALONE";
 pub const COMPANY_PARTNER: &str = "COMPANY_PARTNER";
 
-pub const LOCATION_NILS: &str = "LOC_NILS";
-pub const LOCATION_MIKA: &str = "LOC_MIKA";
+pub const LOCATION_PREFIX: &str = "LOC_IDX_";
 
 pub const QUALITY_PREFIX: &str = "QUALITY_";
 
@@ -64,17 +63,32 @@ pub fn get_partner_name_keyboard() -> InlineKeyboardMarkup {
     ]])
 }
 
-pub fn get_location_keyboard() -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![
-        vec![
-            InlineKeyboardButton::callback("Nils", LOCATION_NILS),
-            InlineKeyboardButton::callback("Mika", LOCATION_MIKA),
-        ],
-        vec![
-            InlineKeyboardButton::callback("✅ Fertigstellen", ACTION_FINISH),
-            InlineKeyboardButton::callback("❌ Abbruch", ACTION_CANCEL),
-        ],
-    ])
+pub fn get_location_keyboard(presets: &[String]) -> InlineKeyboardMarkup {
+    let mut rows = Vec::new();
+
+    if !presets.is_empty() {
+        for (chunk_idx, chunk) in presets.chunks(2).enumerate() {
+            let row = chunk
+                .iter()
+                .enumerate()
+                .map(|(in_chunk_idx, name)| {
+                    let global_idx = chunk_idx * 2 + in_chunk_idx;
+                    InlineKeyboardButton::callback(
+                        name,
+                        format!("{}{}", LOCATION_PREFIX, global_idx),
+                    )
+                })
+                .collect();
+            rows.push(row);
+        }
+    }
+
+    rows.push(vec![
+        InlineKeyboardButton::callback("✅ Fertigstellen", ACTION_FINISH),
+        InlineKeyboardButton::callback("❌ Abbruch", ACTION_CANCEL),
+    ]);
+
+    InlineKeyboardMarkup::new(rows)
 }
 
 pub fn get_quality_keyboard() -> InlineKeyboardMarkup {

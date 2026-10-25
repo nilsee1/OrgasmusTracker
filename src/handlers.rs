@@ -106,6 +106,15 @@ pub async fn clear_previous_keyboard(
     }
 }
 
+/// Helper to return the appropriate location prompt text depending on configured presets.
+pub fn get_location_prompt_text(presets: &[String]) -> &'static str {
+    if presets.is_empty() {
+        "📍 Wo fand es statt? Bitte gib den Ort als Text ein (oder klicke auf Fertigstellen):"
+    } else {
+        "📍 Wo fand es statt? Wähle einen Button oder gib den Ort als Text ein:"
+    }
+}
+
 /// Handle top-level bot commands (/start, /orgasmus, /liste, /hilfe, /abbrechen).
 pub async fn handle_command(
     bot: Bot,
@@ -362,6 +371,7 @@ pub async fn handle_partner_name_message(
     bot: Bot,
     msg: Message,
     dialogue: MyDialogue,
+    config: Arc<Config>,
     (draft, last_msg_id): (DraftEntry, Option<i32>),
 ) -> HandlerResult {
     clear_previous_keyboard(&bot, msg.chat.id, last_msg_id).await;
@@ -397,9 +407,9 @@ pub async fn handle_partner_name_message(
     let sent = bot
         .send_message(
             msg.chat.id,
-            "📍 Wo fand es statt? Wähle einen Button oder gib den Ort als Text ein:",
+            get_location_prompt_text(&config.location_presets),
         )
-        .reply_markup(get_location_keyboard())
+        .reply_markup(get_location_keyboard(&config.location_presets))
         .await?;
 
     dialogue
@@ -417,6 +427,7 @@ pub async fn handle_location_message(
     bot: Bot,
     msg: Message,
     dialogue: MyDialogue,
+    config: Arc<Config>,
     (draft, last_msg_id): (DraftEntry, Option<i32>),
 ) -> HandlerResult {
     clear_previous_keyboard(&bot, msg.chat.id, last_msg_id).await;
@@ -434,7 +445,7 @@ pub async fn handle_location_message(
                 ),
             )
             .parse_mode(ParseMode::Html)
-            .reply_markup(get_location_keyboard())
+            .reply_markup(get_location_keyboard(&config.location_presets))
             .await?;
 
         dialogue
@@ -700,9 +711,9 @@ pub async fn handle_callback_query(
         bot.edit_message_text(
             chat_id,
             message_id,
-            "📍 Wo fand es statt? Wähle einen Button oder gib den Ort als Text ein:",
+            get_location_prompt_text(&config.location_presets),
         )
-        .reply_markup(get_location_keyboard())
+        .reply_markup(get_location_keyboard(&config.location_presets))
         .await?;
 
         dialogue
@@ -714,35 +725,40 @@ pub async fn handle_callback_query(
         return Ok(());
     }
 
-    // 7. Location: Nils or Mika
-    if data == LOCATION_NILS || data == LOCATION_MIKA {
+    // 7. Location preset selected
+    if let Some(idx_str) = data.strip_prefix(LOCATION_PREFIX) {
         bot.answer_callback_query(q.id.clone()).await?;
-        let current_state = dialogue.get().await?.unwrap_or_default();
-        let mut draft = match current_state {
-            State::Location { draft, .. } => draft,
-            _ => DraftEntry {
-                r#type: "detailed".to_string(),
-                ..Default::default()
-            },
-        };
+        if let Ok(idx) = idx_str.parse::<usize>() {
+            if let Some(preset_name) = config.location_presets.get(idx) {
+                let current_state = dialogue.get().await?.unwrap_or_default();
+                let mut draft = match current_state {
+                    State::Location { draft, .. } => draft,
+                    _ => DraftEntry {
+                        r#type: "detailed".to_string(),
+                        ..Default::default()
+                    },
+                };
 
-        let loc_name = if data == LOCATION_NILS { "Nils" } else { "Mika" };
-        draft.location = Some(loc_name.to_string());
+                draft.location = Some(preset_name.clone());
 
-        bot.edit_message_text(
-            chat_id,
-            message_id,
-            "⭐ Wie war die Qualität auf einer Skala von 1 bis 10 (10 = das Beste)?",
-        )
-        .reply_markup(get_quality_keyboard())
-        .await?;
+                bot.edit_message_text(
+                    chat_id,
+                    message_id,
+                    "⭐ Wie war die Qualität auf einer Skala von 1 bis 10 (10 = das Beste)?",
+                )
+                .reply_markup(get_quality_keyboard())
+                .await?;
 
-        dialogue
-            .update(State::Quality {
-                draft,
-                last_keyboard_msg_id: Some(message_id.0),
-            })
-            .await?;
+                dialogue
+                    .update(State::Quality {
+                        draft,
+                        last_keyboard_msg_id: Some(message_id.0),
+                    })
+                    .await?;
+            } else {
+                log::warn!("Location preset index {} out of bounds", idx);
+            }
+        }
         return Ok(());
     }
 
