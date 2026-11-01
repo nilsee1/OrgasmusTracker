@@ -1,4 +1,6 @@
-use orgasmus_tracker::models::{DraftEntry, Entry, StatsSummary, MAX_DESCRIPTION_LENGTH};
+use orgasmus_tracker::models::{
+    DraftEntry, Entry, RankedStatItem, StatsSummary, TimeOfDayDistribution, MAX_DESCRIPTION_LENGTH,
+};
 use orgasmus_tracker::utils::{
     escape_csv_field, format_detailed_summary, format_entries_list_text,
     format_statistics_text, format_timestamp_display, generate_csv_export,
@@ -206,6 +208,7 @@ fn test_format_statistics_text_populated() {
         count_alone: 25,
         count_partner: 17,
         avg_quality: Some(8.7),
+        ..Default::default()
     };
 
     let text = format_statistics_text(&stats, 2026);
@@ -233,10 +236,110 @@ fn test_format_statistics_text_no_quality_and_no_prev_year() {
         count_alone: 0,
         count_partner: 0,
         avg_quality: None,
+        ..Default::default()
     };
 
     let text = format_statistics_text(&stats, 2026);
     assert!(!text.contains("Vorjahr"));
     assert!(text.contains("<i>Keine Angabe</i>"));
+}
+
+#[test]
+fn test_format_statistics_text_extended_sections() {
+    let stats = StatsSummary {
+        total_count: 50,
+        count_last_7_days: 7,
+        count_last_30_days: 20,
+        count_current_year: 45,
+        count_last_365_days: 48,
+        count_previous_year: 10,
+        count_alone: 30,
+        count_partner: 20,
+        avg_quality: Some(8.5),
+        top_locations: vec![
+            RankedStatItem {
+                name: "Home & Garden <3".to_string(),
+                count: 15,
+                avg_quality: Some(9.2),
+            },
+            RankedStatItem {
+                name: "Office".to_string(),
+                count: 5,
+                avg_quality: None,
+            },
+        ],
+        top_partners: vec![
+            RankedStatItem {
+                name: "Julia & Sarah".to_string(),
+                count: 10,
+                avg_quality: Some(8.9),
+            },
+        ],
+        current_streak_days: 3,
+        longest_streak_days: 7,
+        days_since_last: Some(0), // Heute
+        longest_gap_days: Some(5),
+        avg_days_between: Some(2.1),
+        most_active_weekday: Some(("Samstag".to_string(), 12)),
+        time_of_day: TimeOfDayDistribution {
+            morning: 10,
+            afternoon: 15,
+            evening: 20,
+            night: 5,
+        },
+    };
+
+    let text = format_statistics_text(&stats, 2026);
+
+    // Verify Serien & Abstände
+    assert!(text.contains("🔥 <b>Serien &amp; Abstände:</b>"));
+    assert!(text.contains("• Aktuelle Serie: <b>3 Tag(e)</b>"));
+    assert!(text.contains("• Längste Serie: <b>7 Tag(e)</b>"));
+    assert!(text.contains("• Letzter Eintrag: <b>Heute</b>"));
+    assert!(text.contains("• Ø Abstand: <b>2.1 Tage</b>"));
+    assert!(text.contains("• Längste Pause: <b>5 Tag(e)</b>"));
+
+    // Verify Zeit-Muster
+    assert!(text.contains("🕒 <b>Zeit-Muster:</b>"));
+    assert!(text.contains("• Beliebtester Tag: <b>Samstag</b> (12x)"));
+    assert!(text.contains("• Tageszeit: 🌅 Morgens: <b>10</b> | ☀️ Mittags: <b>15</b> | 🌆 Abends: <b>20</b> | 🌙 Nachts: <b>5</b>"));
+
+    // Verify Top Orte with HTML escaping and quality
+    assert!(text.contains("📍 <b>Top Orte:</b>"));
+    assert!(text.contains("• 1. <b>Home &amp; Garden &lt;3</b>: 15x (⭐ 9.2)"));
+    assert!(text.contains("• 2. <b>Office</b>: 5x"));
+    assert!(!text.contains("• 2. <b>Office</b>: 5x (⭐"));
+
+    // Verify Top Partner with HTML escaping
+    assert!(text.contains("💖 <b>Top Partner:</b>"));
+    assert!(text.contains("• 1. <b>Julia &amp; Sarah</b>: 10x (⭐ 8.9)"));
+}
+
+#[test]
+fn test_format_statistics_text_days_since_last_variations() {
+    let mut stats = StatsSummary {
+        total_count: 5,
+        days_since_last: Some(1), // Gestern
+        ..Default::default()
+    };
+    let text_gestern = format_statistics_text(&stats, 2026);
+    assert!(text_gestern.contains("• Letzter Eintrag: <b>Gestern</b>"));
+
+    stats.days_since_last = Some(4); // vor 4 Tagen
+    let text_vor_4 = format_statistics_text(&stats, 2026);
+    assert!(text_vor_4.contains("• Letzter Eintrag: <b>vor 4 Tagen</b>"));
+}
+
+#[test]
+fn test_format_statistics_text_omits_empty_top_sections() {
+    let stats = StatsSummary {
+        total_count: 5,
+        top_locations: vec![],
+        top_partners: vec![],
+        ..Default::default()
+    };
+    let text = format_statistics_text(&stats, 2026);
+    assert!(!text.contains("📍 <b>Top Orte:</b>"));
+    assert!(!text.contains("💖 <b>Top Partner:</b>"));
 }
 

@@ -191,7 +191,7 @@ pub fn format_statistics_text(stats: &StatsSummary, current_year: i32) -> String
         String::new()
     };
 
-    format!(
+    let mut result = format!(
         "📊 <b>Persönliche Statistiken</b>\n\n\
         📈 <b>Einträge nach Zeitraum:</b>\n\
         • Gesamt: <b>{}</b>\n\
@@ -214,7 +214,92 @@ pub fn format_statistics_text(stats: &StatsSummary, current_year: i32) -> String
         stats.count_alone,
         stats.count_partner,
         quality_str
-    )
+    );
+
+    let mut streak_lines = vec![
+        "🔥 <b>Serien &amp; Abstände:</b>".to_string(),
+        format!("• Aktuelle Serie: <b>{} Tag(e)</b>", stats.current_streak_days),
+        format!("• Längste Serie: <b>{} Tag(e)</b>", stats.longest_streak_days),
+    ];
+
+    if let Some(d) = stats.days_since_last {
+        let last_str = match d {
+            0 => "Heute".to_string(),
+            1 => "Gestern".to_string(),
+            n => format!("vor {} Tagen", n),
+        };
+        streak_lines.push(format!("• Letzter Eintrag: <b>{}</b>", last_str));
+    }
+
+    if let Some(avg) = stats.avg_days_between {
+        streak_lines.push(format!("• Ø Abstand: <b>{:.1} Tage</b>", avg));
+    }
+
+    if let Some(gap) = stats.longest_gap_days {
+        streak_lines.push(format!("• Längste Pause: <b>{} Tag(e)</b>", gap));
+    }
+
+    result.push_str("\n\n");
+    result.push_str(&streak_lines.join("\n"));
+
+    let mut pattern_lines = vec!["🕒 <b>Zeit-Muster:</b>".to_string()];
+
+    if let Some((day, count)) = &stats.most_active_weekday {
+        pattern_lines.push(format!("• Beliebtester Tag: <b>{}</b> ({}x)", day, count));
+    }
+
+    pattern_lines.push(format!(
+        "• Tageszeit: 🌅 Morgens: <b>{}</b> | ☀️ Mittags: <b>{}</b> | 🌆 Abends: <b>{}</b> | 🌙 Nachts: <b>{}</b>",
+        stats.time_of_day.morning,
+        stats.time_of_day.afternoon,
+        stats.time_of_day.evening,
+        stats.time_of_day.night
+    ));
+
+    result.push_str("\n\n");
+    result.push_str(&pattern_lines.join("\n"));
+
+    if !stats.top_locations.is_empty() {
+        let mut loc_lines = vec!["📍 <b>Top Orte:</b>".to_string()];
+        for (i, item) in stats.top_locations.iter().enumerate() {
+            let escaped_name = html_escape::encode_text(&item.name);
+            let quality_str = match item.avg_quality {
+                Some(q) => format!(" (⭐ {:.1})", q),
+                None => String::new(),
+            };
+            loc_lines.push(format!(
+                "• {}. <b>{}</b>: {}x{}",
+                i + 1,
+                escaped_name,
+                item.count,
+                quality_str
+            ));
+        }
+        result.push_str("\n\n");
+        result.push_str(&loc_lines.join("\n"));
+    }
+
+    if !stats.top_partners.is_empty() {
+        let mut partner_lines = vec!["💖 <b>Top Partner:</b>".to_string()];
+        for (i, item) in stats.top_partners.iter().enumerate() {
+            let escaped_name = html_escape::encode_text(&item.name);
+            let quality_str = match item.avg_quality {
+                Some(q) => format!(" (⭐ {:.1})", q),
+                None => String::new(),
+            };
+            partner_lines.push(format!(
+                "• {}. <b>{}</b>: {}x{}",
+                i + 1,
+                escaped_name,
+                item.count,
+                quality_str
+            ));
+        }
+        result.push_str("\n\n");
+        result.push_str(&partner_lines.join("\n"));
+    }
+
+    result
 }
 
 /// Escape a single CSV field value according to RFC 4180 rules.

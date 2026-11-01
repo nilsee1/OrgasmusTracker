@@ -6,7 +6,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Error as SqlxError, Row, SqlitePool};
 use thiserror::Error;
 
-use crate::models::{Entry, StatsSummary};
+use crate::models::{Entry, RankedStatItem, StatsSummary, TimeOfDayDistribution};
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -349,6 +349,217 @@ impl Database {
 
         let avg_quality = raw_avg.map(|q| (q * 10.0).round() / 10.0);
 
+        let loc_rows = sqlx::query(
+            r#"
+            SELECT
+                TRIM(location) AS name,
+                CAST(COUNT(*) AS INTEGER) AS cnt,
+                AVG(quality) AS avg_q
+            FROM entries
+            WHERE user_id = ? AND location IS NOT NULL AND TRIM(location) != ''
+            GROUP BY TRIM(location)
+            ORDER BY cnt DESC, avg_q DESC, TRIM(location) ASC
+            LIMIT 3;
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut top_locations = Vec::with_capacity(loc_rows.len());
+        for row in loc_rows {
+            let name: String = row.try_get("name")?;
+            let count: i64 = row.try_get("cnt")?;
+            let avg_q: Option<f64> = row.try_get("avg_q").ok().flatten();
+            let avg_quality = avg_q.map(|q| (q * 10.0).round() / 10.0);
+            top_locations.push(RankedStatItem {
+                name,
+                count,
+                avg_quality,
+            });
+        }
+
+        let partner_rows = sqlx::query(
+            r#"
+            SELECT
+                TRIM(partner_name) AS name,
+                CAST(COUNT(*) AS INTEGER) AS cnt,
+                AVG(quality) AS avg_q
+            FROM entries
+            WHERE user_id = ? AND company = 'Mit anderer Person' AND partner_name IS NOT NULL AND TRIM(partner_name) != ''
+            GROUP BY TRIM(partner_name)
+            ORDER BY cnt DESC, avg_q DESC, TRIM(partner_name) ASC
+            LIMIT 3;
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut top_partners = Vec::with_capacity(partner_rows.len());
+        for row in partner_rows {
+            let name: String = row.try_get("name")?;
+            let count: i64 = row.try_get("cnt")?;
+            let avg_q: Option<f64> = row.try_get("avg_q").ok().flatten();
+            let avg_quality = avg_q.map(|q| (q * 10.0).round() / 10.0);
+            top_partners.push(RankedStatItem {
+                name,
+                count,
+                avg_quality,
+            });
+        }
+
+        let ts_rows = sqlx::query(
+            r#"
+            SELECT timestamp
+            FROM entries
+            WHERE user_id = ?
+            ORDER BY timestamp ASC;
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut parsed_datetimes: Vec<chrono::NaiveDateTime> = Vec::new();
+        for row in ts_rows {
+            let ts_str: String = row.try_get("timestamp")?;
+            if let Some(ndt) = crate::utils::parse_german_datetime(&ts_str) {
+                parsed_datetimes.push(ndt);
+            } else if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts_str.trim()) {
+                parsed_datetimes.push(dt.with_timezone(&self.timezone).naive_local());
+            }
+        }
+        parsed_datetimes.sort();
+
+        use chrono::Timelike;
+        let mut time_of_day = TimeOfDayDistribution::default();
+        for dt in &parsed_datetimes {
+            match dt.hour() {
+                6..=11 => time_of_day.morning += 1,
+                12..=17 => time_of_day.afternoon += 1,
+                18..=23 => time_of_day.evening += 1,
+                0..=5 => time_of_day.night += 1,
+                _ => unreachable!(),
+            }
+        }
+
+        use chrono::Weekday;
+        let most_active_weekday = if parsed_datetimes.is_empty() {
+            None
+        } else {
+            let mut weekday_counts = [0i64; 7]; // Mon=0 .. Sun=6
+            for dt in &parsed_datetimes {
+                let idx = match dt.weekday() {
+                    Weekday::Mon => 0,
+                    Weekday::Tue => 1,
+                    Weekday::Wed => 2,
+                    Weekday::Thu => 3,
+                    Weekday::Fri => 4,
+                    Weekday::Sat => 5,
+                    Weekday::Sun => 6,
+                };
+                weekday_counts[idx] += 1;
+            }
+
+            let german_names = [
+                "Montag",
+                "Dienstag",
+                "Mittwoch",
+                "Donnerstag",
+                "Freitag",
+                "Samstag",
+                "Sonntag",
+            ];
+
+            let mut best_day = "";
+            let mut max_count = 0i64;
+
+            for (name, count) in german_names.iter().zip(weekday_counts.iter()) {
+                if *count > max_count {
+                    max_count = *count;
+                    best_day = name;
+                }
+            }
+
+            if max_count > 0 {
+                Some((best_day.to_string(), max_count))
+            } else {
+                None
+            }
+        };
+
+        use chrono::NaiveDate;
+        let mut unique_dates: Vec<NaiveDate> = parsed_datetimes.iter().map(|dt| dt.date()).collect();
+        unique_dates.sort();
+        unique_dates.dedup();
+
+        let days_since_last = unique_dates
+            .last()
+            .map(|last_date| (now.date_naive() - *last_date).num_days().max(0));
+
+        let longest_streak_days = if unique_dates.is_empty() {
+            0
+        } else {
+            let mut max_streak = 1i64;
+            let mut current_run = 1i64;
+            for i in 1..unique_dates.len() {
+                if (unique_dates[i] - unique_dates[i - 1]).num_days() == 1 {
+                    current_run += 1;
+                } else {
+                    current_run = 1;
+                }
+                if current_run > max_streak {
+                    max_streak = current_run;
+                }
+            }
+            max_streak
+        };
+
+        let current_streak_days = if unique_dates.is_empty() {
+            0
+        } else {
+            let today = now.date_naive();
+            let yesterday = today.pred_opt();
+            let last_date = *unique_dates.last().unwrap();
+
+            let is_active = last_date == today || Some(last_date) == yesterday;
+            if !is_active {
+                0
+            } else {
+                let mut streak = 1i64;
+                for i in (1..unique_dates.len()).rev() {
+                    if (unique_dates[i] - unique_dates[i - 1]).num_days() == 1 {
+                        streak += 1;
+                    } else {
+                        break;
+                    }
+                }
+                streak
+            }
+        };
+
+        let (avg_days_between, longest_gap_days) = if parsed_datetimes.len() >= 2 {
+            let n = parsed_datetimes.len();
+            let first = parsed_datetimes.first().unwrap();
+            let last = parsed_datetimes.last().unwrap();
+            let total_seconds = (*last - *first).num_seconds() as f64;
+            let avg_days = (total_seconds / (n - 1) as f64) / 86400.0;
+            let rounded_avg = (avg_days * 10.0).round() / 10.0;
+
+            let mut max_gap = 0i64;
+            for i in 1..n {
+                let gap = (parsed_datetimes[i].date() - parsed_datetimes[i - 1].date()).num_days();
+                if gap > max_gap {
+                    max_gap = gap;
+                }
+            }
+
+            (Some(rounded_avg), Some(max_gap))
+        } else {
+            (None, None)
+        };
+
         Ok(StatsSummary {
             total_count,
             count_last_7_days,
@@ -359,6 +570,15 @@ impl Database {
             count_alone,
             count_partner,
             avg_quality,
+            top_locations,
+            top_partners,
+            current_streak_days,
+            longest_streak_days,
+            days_since_last,
+            longest_gap_days,
+            avg_days_between,
+            most_active_weekday,
+            time_of_day,
         })
     }
 }

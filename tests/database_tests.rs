@@ -488,3 +488,226 @@ async fn test_migration_adds_location_column() {
     assert_eq!(fetched.location.as_deref(), Some("Nils"));
 }
 
+#[tokio::test]
+async fn test_statistics_streaks() {
+    let (db, _tmp) = create_test_db().await;
+    let tz = chrono_tz::Europe::Berlin;
+    // Reference time: 2026-10-20 15:00:00 (Tuesday)
+    let now = chrono::TimeZone::with_ymd_and_hms(&tz, 2026, 10, 20, 15, 0, 0).unwrap();
+
+    // User 1: Active streak ending today (2026-10-18, 2026-10-19, 2026-10-20)
+    // Multiple entries on 2026-10-19 and 2026-10-20 to ensure deduplication works
+    let user_active_today = 101;
+    db.add_entry(user_active_today, "simple", "2026-10-18 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_active_today, "simple", "2026-10-19 09:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_active_today, "simple", "2026-10-19 21:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_active_today, "simple", "2026-10-20 08:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_active_today, "simple", "2026-10-20 14:00", None, None, None, None, None, None).await.unwrap();
+
+    let stats1 = db.get_statistics_at(user_active_today, now).await.unwrap();
+    assert_eq!(stats1.current_streak_days, 3);
+    assert_eq!(stats1.longest_streak_days, 3);
+    assert_eq!(stats1.days_since_last, Some(0)); // Today
+
+    // User 2: Active streak ending yesterday (2026-10-18, 2026-10-19; none today)
+    let user_active_yesterday = 102;
+    db.add_entry(user_active_yesterday, "simple", "2026-10-18 12:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_active_yesterday, "simple", "2026-10-19 18:00", None, None, None, None, None, None).await.unwrap();
+
+    let stats2 = db.get_statistics_at(user_active_yesterday, now).await.unwrap();
+    assert_eq!(stats2.current_streak_days, 2);
+    assert_eq!(stats2.longest_streak_days, 2);
+    assert_eq!(stats2.days_since_last, Some(1)); // Yesterday
+
+    // User 3: Broken streak (last entry 2 days ago: 2026-10-18; longer streak in past: 2026-10-10, 11, 12, 13 = 4 days)
+    let user_broken = 103;
+    db.add_entry(user_broken, "simple", "2026-10-10 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_broken, "simple", "2026-10-11 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_broken, "simple", "2026-10-12 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_broken, "simple", "2026-10-13 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_broken, "simple", "2026-10-17 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_broken, "simple", "2026-10-18 10:00", None, None, None, None, None, None).await.unwrap();
+
+    let stats3 = db.get_statistics_at(user_broken, now).await.unwrap();
+    assert_eq!(stats3.current_streak_days, 0); // Broken (last was 2 days ago)
+    assert_eq!(stats3.longest_streak_days, 4); // Oct 10-13
+    assert_eq!(stats3.days_since_last, Some(2));
+}
+
+#[tokio::test]
+async fn test_statistics_intervals_and_gaps() {
+    let (db, _tmp) = create_test_db().await;
+    let tz = chrono_tz::Europe::Berlin;
+    let now = chrono::TimeZone::with_ymd_and_hms(&tz, 2026, 10, 20, 12, 0, 0).unwrap();
+
+    // 0 entries
+    let stats0 = db.get_statistics_at(300, now).await.unwrap();
+    assert_eq!(stats0.longest_gap_days, None);
+    assert_eq!(stats0.avg_days_between, None);
+
+    // 1 entry
+    db.add_entry(301, "simple", "2026-10-20 10:00", None, None, None, None, None, None).await.unwrap();
+    let stats1 = db.get_statistics_at(301, now).await.unwrap();
+    assert_eq!(stats1.longest_gap_days, None);
+    assert_eq!(stats1.avg_days_between, None);
+
+    // 2 entries on the same day (gap is 0, avg_days_between is 8 hours / 24 hours = 0.3 days)
+    db.add_entry(302, "simple", "2026-10-20 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(302, "simple", "2026-10-20 18:00", None, None, None, None, None, None).await.unwrap();
+    let stats2 = db.get_statistics_at(302, now).await.unwrap();
+    assert_eq!(stats2.longest_gap_days, Some(0));
+    assert_eq!(stats2.avg_days_between, Some(0.3));
+
+    // Multiple entries across days:
+    // 2026-10-01 12:00
+    // 2026-10-05 12:00 (gap: 4 days)
+    // 2026-10-06 12:00 (gap: 1 day)
+    // Total duration: 5 days. (n - 1) = 2. avg = 2.5 days. Max gap = 4 days.
+    db.add_entry(303, "simple", "2026-10-01 12:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(303, "simple", "2026-10-05 12:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(303, "simple", "2026-10-06 12:00", None, None, None, None, None, None).await.unwrap();
+    let stats3 = db.get_statistics_at(303, now).await.unwrap();
+    assert_eq!(stats3.longest_gap_days, Some(4));
+    assert_eq!(stats3.avg_days_between, Some(2.5));
+}
+
+#[tokio::test]
+async fn test_statistics_top_locations_and_partners() {
+    let (db, _tmp) = create_test_db().await;
+    let tz = chrono_tz::Europe::Berlin;
+    let now = chrono::TimeZone::with_ymd_and_hms(&tz, 2026, 10, 20, 12, 0, 0).unwrap();
+    let user_id = 400;
+
+    // Top Locations:
+    // "Home": 3 entries, qualities: 8, 9, 10 -> avg = 9.0
+    // "Hotel": 2 entries, qualities: 10, 10 -> avg = 10.0
+    // "Beach": 2 entries, qualities: 7, 7 -> avg = 7.0
+    // "Cabin": 1 entry, quality: 10 -> avg = 10.0 (should not be in top 3)
+    // Empty & whitespace locations: should be ignored
+    db.add_entry(user_id, "detailed", "2026-10-01 10:00", None, None, Some("Home"), Some(8), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-02 10:00", None, None, Some("Home"), Some(9), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-03 10:00", None, None, Some("  Home  "), Some(10), None, None).await.unwrap();
+
+    db.add_entry(user_id, "detailed", "2026-10-04 10:00", None, None, Some("Hotel"), Some(10), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-05 10:00", None, None, Some("Hotel"), Some(10), None, None).await.unwrap();
+
+    db.add_entry(user_id, "detailed", "2026-10-06 10:00", None, None, Some("Beach"), Some(7), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-07 10:00", None, None, Some("Beach"), Some(7), None, None).await.unwrap();
+
+    db.add_entry(user_id, "detailed", "2026-10-08 10:00", None, None, Some("Cabin"), Some(10), None, None).await.unwrap();
+
+    // Ignored locations:
+    db.add_entry(user_id, "detailed", "2026-10-09 10:00", None, None, None, Some(10), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-10 10:00", None, None, Some(""), Some(10), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-11 10:00", None, None, Some("   "), Some(10), None, None).await.unwrap();
+
+    // Top Partners:
+    // "Julia": 3 entries with company = 'Mit anderer Person', qualities: 9, 9, None -> avg = 9.0
+    // "Sarah": 2 entries with company = 'Mit anderer Person', qualities: 10, 10 -> avg = 10.0
+    // "Alex": 2 entries with company = 'Mit anderer Person', qualities: 8, 8 -> avg = 8.0
+    // "Mika": 1 entry with company = 'Mit anderer Person' -> not in top 3
+    // "Emma": company = 'Alleine' -> MUST NOT BE INCLUDED!
+    // Empty partner name -> ignored
+    db.add_entry(user_id, "detailed", "2026-10-01 10:00", Some("Mit anderer Person"), Some("Julia"), None, Some(9), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-02 10:00", Some("Mit anderer Person"), Some(" Julia "), None, Some(9), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-03 10:00", Some("Mit anderer Person"), Some("Julia"), None, None, None, None).await.unwrap();
+
+    db.add_entry(user_id, "detailed", "2026-10-04 10:00", Some("Mit anderer Person"), Some("Sarah"), None, Some(10), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-05 10:00", Some("Mit anderer Person"), Some("Sarah"), None, Some(10), None, None).await.unwrap();
+
+    db.add_entry(user_id, "detailed", "2026-10-06 10:00", Some("Mit anderer Person"), Some("Alex"), None, Some(8), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-07 10:00", Some("Mit anderer Person"), Some("Alex"), None, Some(8), None, None).await.unwrap();
+
+    db.add_entry(user_id, "detailed", "2026-10-08 10:00", Some("Mit anderer Person"), Some("Mika"), None, Some(10), None, None).await.unwrap();
+
+    // Ignored partner entries:
+    db.add_entry(user_id, "detailed", "2026-10-09 10:00", Some("Alleine"), Some("Emma"), None, Some(10), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-10 10:00", Some("Mit anderer Person"), None, None, Some(10), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-11 10:00", Some("Mit anderer Person"), Some(""), None, Some(10), None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-12 10:00", Some("Mit anderer Person"), Some("   "), None, Some(10), None, None).await.unwrap();
+
+    let stats = db.get_statistics_at(user_id, now).await.unwrap();
+
+    // Check Top Locations
+    assert_eq!(stats.top_locations.len(), 3);
+    assert_eq!(stats.top_locations[0].name, "Home");
+    assert_eq!(stats.top_locations[0].count, 3);
+    assert_eq!(stats.top_locations[0].avg_quality, Some(9.0));
+
+    assert_eq!(stats.top_locations[1].name, "Hotel");
+    assert_eq!(stats.top_locations[1].count, 2);
+    assert_eq!(stats.top_locations[1].avg_quality, Some(10.0));
+
+    assert_eq!(stats.top_locations[2].name, "Beach");
+    assert_eq!(stats.top_locations[2].count, 2);
+    assert_eq!(stats.top_locations[2].avg_quality, Some(7.0));
+
+    // Check Top Partners
+    assert_eq!(stats.top_partners.len(), 3);
+    assert_eq!(stats.top_partners[0].name, "Julia");
+    assert_eq!(stats.top_partners[0].count, 3);
+    assert_eq!(stats.top_partners[0].avg_quality, Some(9.0));
+
+    assert_eq!(stats.top_partners[1].name, "Sarah");
+    assert_eq!(stats.top_partners[1].count, 2);
+    assert_eq!(stats.top_partners[1].avg_quality, Some(10.0));
+
+    assert_eq!(stats.top_partners[2].name, "Alex");
+    assert_eq!(stats.top_partners[2].count, 2);
+    assert_eq!(stats.top_partners[2].avg_quality, Some(8.0));
+}
+
+#[tokio::test]
+async fn test_statistics_time_patterns_and_weekdays() {
+    let (db, _tmp) = create_test_db().await;
+    let tz = chrono_tz::Europe::Berlin;
+    let now = chrono::TimeZone::with_ymd_and_hms(&tz, 2026, 10, 20, 12, 0, 0).unwrap();
+    let user_id = 500;
+
+    // 2026-10-19 is a Monday
+    // 2026-10-21 is a Wednesday
+
+    // Night: 00:00 - 05:59 -> 02:30 (Monday)
+    db.add_entry(user_id, "simple", "2026-10-19 02:30", None, None, None, None, None, None).await.unwrap();
+
+    // Morning: 06:00 - 11:59 -> 08:15 (Monday)
+    db.add_entry(user_id, "simple", "2026-10-19 08:15", None, None, None, None, None, None).await.unwrap();
+
+    // Afternoon: 12:00 - 17:59 -> 14:00 (Wednesday)
+    db.add_entry(user_id, "simple", "2026-10-21 14:00", None, None, None, None, None, None).await.unwrap();
+
+    // Evening: 18:00 - 23:59 -> 20:45 (Wednesday)
+    db.add_entry(user_id, "simple", "2026-10-21 20:45", None, None, None, None, None, None).await.unwrap();
+
+    // Test RFC3339 timestamp parsing fallback: 2026-10-19 19:00:00 UTC = 2026-10-19 21:00:00 CEST (Monday, Evening)
+    db.add_entry(user_id, "simple", "2026-10-19T19:00:00Z", None, None, None, None, None, None).await.unwrap();
+
+    let stats = db.get_statistics_at(user_id, now).await.unwrap();
+
+    assert_eq!(stats.time_of_day.night, 1);
+    assert_eq!(stats.time_of_day.morning, 1);
+    assert_eq!(stats.time_of_day.afternoon, 1);
+    assert_eq!(stats.time_of_day.evening, 2);
+
+    // Monday has 3 entries (02:30, 08:15, 21:00 Berlin). Wednesday has 2 entries (14:00, 20:45).
+    assert_eq!(stats.most_active_weekday, Some(("Montag".to_string(), 3)));
+}
+
+#[tokio::test]
+async fn test_statistics_weekday_tie_breaking() {
+    let (db, _tmp) = create_test_db().await;
+    let tz = chrono_tz::Europe::Berlin;
+    let now = chrono::TimeZone::with_ymd_and_hms(&tz, 2026, 10, 25, 12, 0, 0).unwrap();
+    let user_id = 501;
+
+    // Tie between Tuesday (2026-10-20) and Friday (2026-10-23): each 2 entries
+    // Earlier day in the week (Dienstag) must win!
+    db.add_entry(user_id, "simple", "2026-10-20 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "simple", "2026-10-20 18:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "simple", "2026-10-23 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "simple", "2026-10-23 18:00", None, None, None, None, None, None).await.unwrap();
+
+    let stats = db.get_statistics_at(user_id, now).await.unwrap();
+    assert_eq!(stats.most_active_weekday, Some(("Dienstag".to_string(), 2)));
+}
+
