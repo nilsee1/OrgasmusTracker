@@ -711,3 +711,202 @@ async fn test_statistics_weekday_tie_breaking() {
     assert_eq!(stats.most_active_weekday, Some(("Dienstag".to_string(), 2)));
 }
 
+#[tokio::test]
+async fn test_get_top_locations_aggregation_tiebreaker_and_limit() {
+    let (db, _tmp) = create_test_db().await;
+    let user_id = 1001;
+
+    // Empty database returns empty
+    assert!(db.get_top_locations(user_id, 4).await.unwrap().is_empty());
+
+    // Null, empty, whitespace-only locations must be ignored
+    db.add_entry(user_id, "detailed", "2026-10-01 10:00", None, None, None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-01 11:00", None, None, Some(""), None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-01 12:00", None, None, Some("   "), None, None, None).await.unwrap();
+
+    // "Zuhause": 3 entries (whitespace trimmed and grouped)
+    db.add_entry(user_id, "detailed", "2026-10-02 10:00", None, None, Some("Zuhause"), None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-03 10:00", None, None, Some("  Zuhause "), None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-04 10:00", None, None, Some("Zuhause"), None, None, None).await.unwrap();
+
+    // "Hotel": 2 entries (older max timestamp: 2026-10-06)
+    db.add_entry(user_id, "detailed", "2026-10-05 10:00", None, None, Some("Hotel"), None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-06 10:00", None, None, Some("Hotel"), None, None, None).await.unwrap();
+
+    // "Strand": 2 entries (newer max timestamp: 2026-10-08 -> wins tiebreaker over Hotel)
+    db.add_entry(user_id, "detailed", "2026-10-07 10:00", None, None, Some("Strand"), None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-08 10:00", None, None, Some("Strand"), None, None, None).await.unwrap();
+
+    // "Auto": 1 entry (2026-10-09)
+    db.add_entry(user_id, "detailed", "2026-10-09 10:00", None, None, Some("Auto"), None, None, None).await.unwrap();
+
+    // "Wald": 1 entry (2026-10-10 -> wins tiebreaker over Auto)
+    db.add_entry(user_id, "detailed", "2026-10-10 10:00", None, None, Some("Wald"), None, None, None).await.unwrap();
+
+    let top4 = db.get_top_locations(user_id, 4).await.unwrap();
+    assert_eq!(top4, vec!["Zuhause", "Strand", "Hotel", "Wald"]);
+
+    let top2 = db.get_top_locations(user_id, 2).await.unwrap();
+    assert_eq!(top2, vec!["Zuhause", "Strand"]);
+
+    assert!(db.get_top_locations(user_id, 0).await.unwrap().is_empty());
+    assert!(db.get_top_locations(user_id, -5).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_get_top_partners_aggregation_tiebreaker_and_limit() {
+    let (db, _tmp) = create_test_db().await;
+    let user_id = 1002;
+
+    assert!(db.get_top_partners(user_id, 4).await.unwrap().is_empty());
+
+    // Ignored: NULL, empty, whitespace, and company='Alleine'
+    db.add_entry(user_id, "detailed", "2026-10-01 10:00", Some("Mit anderer Person"), None, None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-01 11:00", Some("Mit anderer Person"), Some(""), None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-01 12:00", Some("Mit anderer Person"), Some("   "), None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-01 13:00", Some("Alleine"), Some("Ignoriert"), None, None, None, None).await.unwrap();
+
+    // "Julia": 3 entries
+    db.add_entry(user_id, "detailed", "2026-10-02 10:00", Some("Mit anderer Person"), Some("Julia"), None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-03 10:00", Some("Mit anderer Person"), Some(" Julia "), None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-04 10:00", Some("Mit anderer Person"), Some("Julia"), None, None, None, None).await.unwrap();
+
+    // "Alex": 2 entries (2026-10-05)
+    db.add_entry(user_id, "detailed", "2026-10-05 09:00", Some("Mit anderer Person"), Some("Alex"), None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-05 10:00", Some("Mit anderer Person"), Some("Alex"), None, None, None, None).await.unwrap();
+
+    // "Sam": 2 entries (2026-10-07 -> newer than Alex)
+    db.add_entry(user_id, "detailed", "2026-10-06 10:00", Some("Mit anderer Person"), Some("Sam"), None, None, None, None).await.unwrap();
+    db.add_entry(user_id, "detailed", "2026-10-07 10:00", Some("Mit anderer Person"), Some("Sam"), None, None, None, None).await.unwrap();
+
+    // "Mika": 1 entry (2026-10-08)
+    db.add_entry(user_id, "detailed", "2026-10-08 10:00", Some("Mit anderer Person"), Some("Mika"), None, None, None, None).await.unwrap();
+
+    // "Lukas": 1 entry (2026-10-09 -> newer than Mika)
+    db.add_entry(user_id, "detailed", "2026-10-09 10:00", Some("Mit anderer Person"), Some("Lukas"), None, None, None, None).await.unwrap();
+
+    let top4 = db.get_top_partners(user_id, 4).await.unwrap();
+    assert_eq!(top4, vec!["Julia", "Sam", "Alex", "Lukas"]);
+
+    let top2 = db.get_top_partners(user_id, 2).await.unwrap();
+    assert_eq!(top2, vec!["Julia", "Sam"]);
+
+    assert!(db.get_top_partners(user_id, 0).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_top_suggestions_strict_multi_user_isolation() {
+    let (db, _tmp) = create_test_db().await;
+    let user_a = 11111;
+    let user_b = 22222;
+    let user_c = 33333;
+
+    // User A records
+    for _ in 0..3 {
+        db.add_entry(user_a, "detailed", "2026-10-10 10:00", Some("Mit anderer Person"), Some("PartnerA1"), Some("OrtA1"), None, None, None).await.unwrap();
+    }
+    db.add_entry(user_a, "detailed", "2026-10-11 10:00", Some("Mit anderer Person"), Some("PartnerA2"), Some("OrtA2"), None, None, None).await.unwrap();
+
+    // User B records (higher frequency so any missing WHERE user_id = ? would leak User B's items first)
+    for _ in 0..10 {
+        db.add_entry(user_b, "detailed", "2026-10-12 10:00", Some("Mit anderer Person"), Some("PartnerB1"), Some("OrtB1"), None, None, None).await.unwrap();
+    }
+    for _ in 0..5 {
+        db.add_entry(user_b, "detailed", "2026-10-13 10:00", Some("Mit anderer Person"), Some("PartnerB2"), Some("OrtB2"), None, None, None).await.unwrap();
+    }
+
+    let locs_a = db.get_top_locations(user_a, 4).await.unwrap();
+    assert_eq!(locs_a, vec!["OrtA1", "OrtA2"]);
+    assert!(!locs_a.iter().any(|l| l.contains('B')));
+
+    let partners_a = db.get_top_partners(user_a, 4).await.unwrap();
+    assert_eq!(partners_a, vec!["PartnerA1", "PartnerA2"]);
+    assert!(!partners_a.iter().any(|p| p.contains('B')));
+
+    let locs_b = db.get_top_locations(user_b, 4).await.unwrap();
+    assert_eq!(locs_b, vec!["OrtB1", "OrtB2"]);
+
+    let partners_b = db.get_top_partners(user_b, 4).await.unwrap();
+    assert_eq!(partners_b, vec!["PartnerB1", "PartnerB2"]);
+
+    // User C has no entries
+    assert!(db.get_top_locations(user_c, 4).await.unwrap().is_empty());
+    assert!(db.get_top_partners(user_c, 4).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_non_destructive_migration_preserves_existing_records_and_creates_indices() {
+    use sqlx::Row;
+
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap().to_string();
+
+    // Pre-populate an existing database without the new location/partner indices
+    {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&format!("sqlite://{}", db_path))
+            .await
+            .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                company TEXT NULL,
+                partner_name TEXT NULL,
+                location TEXT NULL,
+                quality INTEGER NULL,
+                description TEXT NULL,
+                created_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"
+            INSERT INTO entries (user_id, type, timestamp, company, partner_name, location, quality, description, created_at)
+            VALUES
+                (42, 'detailed', '2026-10-01 10:00', 'Mit anderer Person', 'Anna', 'Zuhause', 9, 'Alt 1', '2026-10-01T10:00:00Z'),
+                (42, 'detailed', '2026-10-02 10:00', 'Mit anderer Person', 'Anna', 'Zuhause', 8, 'Alt 2', '2026-10-02T10:00:00Z'),
+                (42, 'detailed', '2026-10-03 10:00', 'Alleine', NULL, 'Hotel', 7, 'Alt 3', '2026-10-03T10:00:00Z');
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        pool.close().await;
+    }
+
+    // Re-open with Database::connect() (calls init_db)
+    let db = Database::connect(&db_path).await.unwrap();
+
+    // Existing records must still be completely intact
+    let all = db.get_all_entries(42).await.unwrap();
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].description.as_deref(), Some("Alt 1"));
+    assert_eq!(all[2].location.as_deref(), Some("Hotel"));
+
+    // Suggestions work immediately on preserved records
+    assert_eq!(db.get_top_locations(42, 4).await.unwrap(), vec!["Zuhause", "Hotel"]);
+    assert_eq!(db.get_top_partners(42, 4).await.unwrap(), vec!["Anna"]);
+
+    // Verify new indices were created non-destructively
+    let idx_rows = sqlx::query(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'entries';",
+    )
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    let idx_names: Vec<String> = idx_rows.into_iter().map(|r| r.get("name")).collect();
+    assert!(idx_names.contains(&"idx_entries_user_ts".to_string()));
+    assert!(idx_names.contains(&"idx_entries_user_location".to_string()));
+    assert!(idx_names.contains(&"idx_entries_user_partner".to_string()));
+}
+

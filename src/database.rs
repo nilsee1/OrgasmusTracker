@@ -23,6 +23,27 @@ pub enum DbError {
     Io(#[from] std::io::Error),
 }
 
+enum TopField {
+    Location,
+    PartnerName,
+}
+
+impl TopField {
+    fn column_name(&self) -> &'static str {
+        match self {
+            Self::Location => "location",
+            Self::PartnerName => "partner_name",
+        }
+    }
+
+    fn extra_filter(&self) -> &'static str {
+        match self {
+            Self::Location => "",
+            Self::PartnerName => " AND (company IS NULL OR company != 'Alleine')",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Database {
     pool: SqlitePool,
@@ -129,6 +150,25 @@ impl Database {
             r#"
             CREATE INDEX IF NOT EXISTS idx_entries_user_ts 
             ON entries (user_id, timestamp DESC, id DESC);
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Non-destructive indices for per-user top location & partner suggestions
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_entries_user_location
+            ON entries (user_id, location);
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_entries_user_partner
+            ON entries (user_id, partner_name);
             "#,
         )
         .execute(&self.pool)
@@ -278,6 +318,62 @@ impl Database {
         .await?;
 
         Ok(entries)
+    }
+
+    async fn get_top_field_values(
+        &self,
+        field: TopField,
+        user_id: i64,
+        limit: i64,
+    ) -> Result<Vec<String>, DbError> {
+        if limit <= 0 {
+            return Ok(Vec::new());
+        }
+
+        let col = field.column_name();
+        let extra_filter = field.extra_filter();
+        let sql = format!(
+            r#"
+            SELECT TRIM({col}) AS name
+            FROM entries
+            WHERE user_id = ?{extra_filter} AND {col} IS NOT NULL AND TRIM({col}) != ''
+            GROUP BY TRIM({col})
+            ORDER BY COUNT(*) DESC, MAX(timestamp) DESC, MAX(id) DESC, TRIM({col}) ASC
+            LIMIT ?;
+            "#
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(user_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut results = Vec::with_capacity(rows.len());
+        for row in rows {
+            results.push(row.try_get("name")?);
+        }
+        Ok(results)
+    }
+
+    /// Retrieve the most frequently used distinct locations for a specific user.
+    pub async fn get_top_locations(
+        &self,
+        user_id: i64,
+        limit: i64,
+    ) -> Result<Vec<String>, DbError> {
+        self.get_top_field_values(TopField::Location, user_id, limit)
+            .await
+    }
+
+    /// Retrieve the most frequently logged distinct partner names for a specific user.
+    pub async fn get_top_partners(
+        &self,
+        user_id: i64,
+        limit: i64,
+    ) -> Result<Vec<String>, DbError> {
+        self.get_top_field_values(TopField::PartnerName, user_id, limit)
+            .await
     }
 
     /// Retrieve aggregated statistics for user_id based on configured timezone.

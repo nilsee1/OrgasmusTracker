@@ -1,10 +1,14 @@
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 use orgasmus_tracker::config::Config;
-use orgasmus_tracker::handlers::get_location_prompt_text;
+use orgasmus_tracker::handlers::{get_location_prompt_text, get_partner_name_prompt_text};
 use orgasmus_tracker::keyboards::*;
 use orgasmus_tracker::models::{
     Entry, MAX_DESCRIPTION_LENGTH, MAX_LOCATION_LENGTH, MAX_PARTNER_NAME_LENGTH,
 };
+use teloxide::types::InlineKeyboardButtonKind;
+
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_parse_allowed_user_ids() {
@@ -32,7 +36,6 @@ fn test_is_user_allowed() {
         allowed_user_ids: allowed,
         db_path: ":memory:".to_string(),
         timezone: chrono_tz::Europe::Berlin,
-        location_presets: vec![],
     };
 
     assert!(config.is_user_allowed(12345));
@@ -40,37 +43,56 @@ fn test_is_user_allowed() {
 }
 
 #[test]
-fn test_parse_location_presets() {
-    let empty = Config::parse_location_presets("");
-    assert!(empty.is_empty());
+fn test_config_from_env_without_location_presets() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let prev_token = std::env::var("TELEGRAM_BOT_TOKEN").ok();
+    let prev_allowed = std::env::var("ALLOWED_USER_IDS").ok();
+    let prev_presets = std::env::var("LOCATION_PRESETS").ok();
 
-    let whitespace = Config::parse_location_presets("   ,   , ");
-    assert!(whitespace.is_empty());
+    std::env::set_var("TELEGRAM_BOT_TOKEN", "123456:TEST_TOKEN");
+    std::env::set_var("ALLOWED_USER_IDS", "111,222");
+    std::env::remove_var("LOCATION_PRESETS");
 
-    let valid = Config::parse_location_presets(" Home , Hotel , Work ");
-    assert_eq!(valid, vec!["Home", "Hotel", "Work"]);
+    let cfg = Config::from_env().expect("Config should load without LOCATION_PRESETS");
+    assert_eq!(cfg.bot_token, "123456:TEST_TOKEN");
+    assert!(cfg.is_user_allowed(111));
+    assert!(cfg.is_user_allowed(222));
 
-    let with_empty_and_spaces = Config::parse_location_presets("Zuhause, , Hotel, ,");
-    assert_eq!(with_empty_and_spaces, vec!["Zuhause", "Hotel"]);
-
-    let too_long_entry = "A".repeat(MAX_LOCATION_LENGTH + 1);
-    let with_too_long = format!("Valid, {}, AlsoValid", too_long_entry);
-    let filtered = Config::parse_location_presets(&with_too_long);
-    assert_eq!(filtered, vec!["Valid", "AlsoValid"]);
+    // Restore original environment variables
+    match prev_token {
+        Some(v) => std::env::set_var("TELEGRAM_BOT_TOKEN", v),
+        None => std::env::remove_var("TELEGRAM_BOT_TOKEN"),
+    }
+    match prev_allowed {
+        Some(v) => std::env::set_var("ALLOWED_USER_IDS", v),
+        None => std::env::remove_var("ALLOWED_USER_IDS"),
+    }
+    match prev_presets {
+        Some(v) => std::env::set_var("LOCATION_PRESETS", v),
+        None => std::env::remove_var("LOCATION_PRESETS"),
+    }
 }
 
 #[test]
-fn test_location_prompt_text() {
+fn test_prompt_texts() {
     let empty: Vec<String> = vec![];
     assert_eq!(
         get_location_prompt_text(&empty),
         "📍 Wo fand es statt? Bitte gib den Ort als Text ein (oder klicke auf Fertigstellen):"
+    );
+    assert_eq!(
+        get_partner_name_prompt_text(&empty),
+        "💬 Bitte gib den Namen der Person als Text ein:"
     );
 
     let populated = vec!["Home".to_string()];
     assert_eq!(
         get_location_prompt_text(&populated),
         "📍 Wo fand es statt? Wähle einen Button oder gib den Ort als Text ein:"
+    );
+    assert_eq!(
+        get_partner_name_prompt_text(&populated),
+        "👥 Mit welcher Person? Wähle einen Vorschlag oder gib einen neuen Namen als Text ein:"
     );
 }
 
@@ -100,39 +122,101 @@ fn test_keyboards_structure() {
     assert_eq!(company_kb.inline_keyboard.len(), 2);
     assert_eq!(company_kb.inline_keyboard[0].len(), 2);
 
-    // Location keyboard - empty presets (default)
+    // Location keyboard - 0 items (empty)
     let location_kb_empty = get_location_keyboard(&[]);
     assert_eq!(location_kb_empty.inline_keyboard.len(), 1);
     assert_eq!(location_kb_empty.inline_keyboard[0].len(), 2);
     assert_eq!(location_kb_empty.inline_keyboard[0][0].text, "✅ Fertigstellen");
     assert_eq!(location_kb_empty.inline_keyboard[0][1].text, "❌ Abbruch");
 
-    // Location keyboard - populated presets
-    let presets = vec!["Home".to_string(), "Hotel".to_string(), "Work".to_string()];
-    let location_kb_populated = get_location_keyboard(&presets);
-    assert_eq!(location_kb_populated.inline_keyboard.len(), 3); // 2 preset rows + 1 action row
-    assert_eq!(location_kb_populated.inline_keyboard[0].len(), 2);
-    assert_eq!(location_kb_populated.inline_keyboard[0][0].text, "Home");
-    assert_eq!(
-        location_kb_populated.inline_keyboard[0][0].kind,
-        teloxide::types::InlineKeyboardButtonKind::CallbackData("LOC_IDX_0".to_string())
-    );
-    assert_eq!(location_kb_populated.inline_keyboard[0][1].text, "Hotel");
-    assert_eq!(
-        location_kb_populated.inline_keyboard[0][1].kind,
-        teloxide::types::InlineKeyboardButtonKind::CallbackData("LOC_IDX_1".to_string())
-    );
+    // Location keyboard - 1..=4 items (plus manual entry + finish/cancel)
+    for count in 1..=4usize {
+        let items: Vec<String> = (0..count).map(|i| format!("Ort {}", i + 1)).collect();
+        let kb = get_location_keyboard(&items);
+        let expected_item_rows = count.div_ceil(2);
+        assert_eq!(kb.inline_keyboard.len(), expected_item_rows + 2);
 
-    assert_eq!(location_kb_populated.inline_keyboard[1].len(), 1);
-    assert_eq!(location_kb_populated.inline_keyboard[1][0].text, "Work");
-    assert_eq!(
-        location_kb_populated.inline_keyboard[1][0].kind,
-        teloxide::types::InlineKeyboardButtonKind::CallbackData("LOC_IDX_2".to_string())
-    );
+        let mut flat_buttons = Vec::new();
+        for row in &kb.inline_keyboard[..expected_item_rows] {
+            flat_buttons.extend(row.iter());
+        }
+        assert_eq!(flat_buttons.len(), count);
+        for (i, btn) in flat_buttons.iter().enumerate() {
+            assert_eq!(btn.text, items[i]);
+            assert_eq!(
+                btn.kind,
+                InlineKeyboardButtonKind::CallbackData(format!("{}{}", LOCATION_PREFIX, i))
+            );
+        }
 
-    assert_eq!(location_kb_populated.inline_keyboard[2].len(), 2);
-    assert_eq!(location_kb_populated.inline_keyboard[2][0].text, "✅ Fertigstellen");
-    assert_eq!(location_kb_populated.inline_keyboard[2][1].text, "❌ Abbruch");
+        let manual_row = &kb.inline_keyboard[expected_item_rows];
+        assert_eq!(manual_row.len(), 1);
+        assert_eq!(manual_row[0].text, "✏️ Neuen Ort eingeben");
+        assert_eq!(
+            manual_row[0].kind,
+            InlineKeyboardButtonKind::CallbackData(LOCATION_MANUAL.to_string())
+        );
+
+        let action_row = &kb.inline_keyboard[expected_item_rows + 1];
+        assert_eq!(action_row.len(), 2);
+        assert_eq!(action_row[0].text, "✅ Fertigstellen");
+        assert_eq!(action_row[1].text, "❌ Abbruch");
+    }
+
+    // Location keyboard caps at 4 suggestions even if >4 items are passed
+    let five_locations: Vec<String> = (1..=5).map(|i| format!("Loc {}", i)).collect();
+    let capped_loc_kb = get_location_keyboard(&five_locations);
+    assert_eq!(capped_loc_kb.inline_keyboard.len(), 4); // 2 item rows + 1 manual row + 1 action row
+    assert_eq!(capped_loc_kb.inline_keyboard[0].len(), 2);
+    assert_eq!(capped_loc_kb.inline_keyboard[1].len(), 2);
+
+    // Partner keyboard - 0 items (empty)
+    let partner_kb_empty = get_partner_name_keyboard(&[]);
+    assert_eq!(partner_kb_empty.inline_keyboard.len(), 1);
+    assert_eq!(partner_kb_empty.inline_keyboard[0].len(), 2);
+    assert_eq!(partner_kb_empty.inline_keyboard[0][0].text, "✅ Fertigstellen");
+    assert_eq!(partner_kb_empty.inline_keyboard[0][1].text, "❌ Abbruch");
+
+    // Partner keyboard - 1..=4 items (plus manual entry + finish/cancel)
+    for count in 1..=4usize {
+        let items: Vec<String> = (0..count).map(|i| format!("Person {}", i + 1)).collect();
+        let kb = get_partner_name_keyboard(&items);
+        let expected_item_rows = count.div_ceil(2);
+        assert_eq!(kb.inline_keyboard.len(), expected_item_rows + 2);
+
+        let mut flat_buttons = Vec::new();
+        for row in &kb.inline_keyboard[..expected_item_rows] {
+            flat_buttons.extend(row.iter());
+        }
+        assert_eq!(flat_buttons.len(), count);
+        for (i, btn) in flat_buttons.iter().enumerate() {
+            assert_eq!(btn.text, items[i]);
+            assert_eq!(
+                btn.kind,
+                InlineKeyboardButtonKind::CallbackData(format!("{}{}", PARTNER_PREFIX, i))
+            );
+        }
+
+        let manual_row = &kb.inline_keyboard[expected_item_rows];
+        assert_eq!(manual_row.len(), 1);
+        assert_eq!(manual_row[0].text, "✏️ Neue Person eingeben");
+        assert_eq!(
+            manual_row[0].kind,
+            InlineKeyboardButtonKind::CallbackData(PARTNER_MANUAL.to_string())
+        );
+
+        let action_row = &kb.inline_keyboard[expected_item_rows + 1];
+        assert_eq!(action_row.len(), 2);
+        assert_eq!(action_row[0].text, "✅ Fertigstellen");
+        assert_eq!(action_row[1].text, "❌ Abbruch");
+    }
+
+    // Partner keyboard caps at 4 suggestions even if >4 items are passed
+    let five_partners: Vec<String> = (1..=5).map(|i| format!("Partner {}", i)).collect();
+    let capped_partner_kb = get_partner_name_keyboard(&five_partners);
+    assert_eq!(capped_partner_kb.inline_keyboard.len(), 4); // 2 item rows + 1 manual row + 1 action row
+    assert_eq!(capped_partner_kb.inline_keyboard[0].len(), 2);
+    assert_eq!(capped_partner_kb.inline_keyboard[1].len(), 2);
 
     // Quality keyboard (10 items in 2 rows + actions row)
     let quality_kb = get_quality_keyboard();

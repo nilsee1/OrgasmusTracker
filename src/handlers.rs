@@ -55,10 +55,12 @@ pub enum State {
     },
     PartnerName {
         draft: DraftEntry,
+        suggestions: Vec<String>,
         last_keyboard_msg_id: Option<i32>,
     },
     Location {
         draft: DraftEntry,
+        suggestions: Vec<String>,
         last_keyboard_msg_id: Option<i32>,
     },
     Quality {
@@ -106,13 +108,85 @@ pub async fn clear_previous_keyboard(
     }
 }
 
-/// Helper to return the appropriate location prompt text depending on configured presets.
-pub fn get_location_prompt_text(presets: &[String]) -> &'static str {
-    if presets.is_empty() {
+/// Maximum number of top location/partner suggestions shown in inline keyboards.
+pub const TOP_SUGGESTIONS_LIMIT: i64 = 4;
+
+/// Return the appropriate partner prompt text depending on available suggestions.
+pub fn get_partner_name_prompt_text(partners: &[String]) -> &'static str {
+    if partners.is_empty() {
+        "💬 Bitte gib den Namen der Person als Text ein:"
+    } else {
+        "👥 Mit welcher Person? Wähle einen Vorschlag oder gib einen neuen Namen als Text ein:"
+    }
+}
+
+/// Return the appropriate location prompt text depending on available suggestions.
+pub fn get_location_prompt_text(locations: &[String]) -> &'static str {
+    if locations.is_empty() {
         "📍 Wo fand es statt? Bitte gib den Ort als Text ein (oder klicke auf Fertigstellen):"
     } else {
         "📍 Wo fand es statt? Wähle einen Button oder gib den Ort als Text ein:"
     }
+}
+
+/// Fetch the user's top partners and build the corresponding prompt and keyboard.
+pub async fn prepare_partner_step(
+    db: &Database,
+    user_id: i64,
+) -> Result<(Vec<String>, &'static str, InlineKeyboardMarkup), crate::database::DbError> {
+    let top_partners = db.get_top_partners(user_id, TOP_SUGGESTIONS_LIMIT).await?;
+    let prompt = get_partner_name_prompt_text(&top_partners);
+    let keyboard = get_partner_name_keyboard(&top_partners);
+    Ok((top_partners, prompt, keyboard))
+}
+
+/// Fetch the user's top locations and build the corresponding prompt and keyboard.
+pub async fn prepare_location_step(
+    db: &Database,
+    user_id: i64,
+) -> Result<(Vec<String>, &'static str, InlineKeyboardMarkup), crate::database::DbError> {
+    let top_locations = db.get_top_locations(user_id, TOP_SUGGESTIONS_LIMIT).await?;
+    let prompt = get_location_prompt_text(&top_locations);
+    let keyboard = get_location_keyboard(&top_locations);
+    Ok((top_locations, prompt, keyboard))
+}
+
+/// Edit the current message to show the location prompt/keyboard and update dialogue state.
+async fn edit_to_location_step(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    dialogue: &MyDialogue,
+    db: &Database,
+    user_id: i64,
+    draft: DraftEntry,
+) -> HandlerResult {
+    let (top_locations, prompt, keyboard) = prepare_location_step(db, user_id).await?;
+
+    bot.edit_message_text(chat_id, message_id, prompt)
+        .reply_markup(keyboard)
+        .await?;
+
+    dialogue
+        .update(State::Location {
+            draft,
+            suggestions: top_locations,
+            last_keyboard_msg_id: Some(message_id.0),
+        })
+        .await?;
+
+    Ok(())
+}
+
+/// Resolve an indexed suggestion button callback (e.g. "LOC_IDX_0") against cached suggestions.
+pub fn resolve_suggestion_index(
+    data: &str,
+    prefix: &str,
+    suggestions: &[String],
+) -> Option<String> {
+    let idx_str = data.strip_prefix(prefix)?;
+    let idx = idx_str.parse::<usize>().ok()?;
+    suggestions.get(idx).cloned()
 }
 
 /// Handle top-level bot commands (/start, /orgasmus, /liste, /hilfe, /abbrechen).
@@ -371,8 +445,8 @@ pub async fn handle_partner_name_message(
     bot: Bot,
     msg: Message,
     dialogue: MyDialogue,
-    config: Arc<Config>,
-    (draft, last_msg_id): (DraftEntry, Option<i32>),
+    db: Arc<Database>,
+    (draft, suggestions, last_msg_id): (DraftEntry, Vec<String>, Option<i32>),
 ) -> HandlerResult {
     clear_previous_keyboard(&bot, msg.chat.id, last_msg_id).await;
     let partner_name = msg.text().unwrap_or("").trim().to_string();
@@ -389,12 +463,13 @@ pub async fn handle_partner_name_message(
                 ),
             )
             .parse_mode(ParseMode::Html)
-            .reply_markup(get_partner_name_keyboard())
+            .reply_markup(get_partner_name_keyboard(&suggestions))
             .await?;
 
         dialogue
             .update(State::PartnerName {
                 draft,
+                suggestions,
                 last_keyboard_msg_id: Some(sent.id.0),
             })
             .await?;
@@ -402,19 +477,22 @@ pub async fn handle_partner_name_message(
     }
 
     let mut updated_draft = draft;
-    updated_draft.partner_name = Some(partner_name);
+    if !partner_name.is_empty() {
+        updated_draft.partner_name = Some(partner_name);
+    }
+
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
+    let (top_locations, prompt, keyboard) = prepare_location_step(&db, user_id).await?;
 
     let sent = bot
-        .send_message(
-            msg.chat.id,
-            get_location_prompt_text(&config.location_presets),
-        )
-        .reply_markup(get_location_keyboard(&config.location_presets))
+        .send_message(msg.chat.id, prompt)
+        .reply_markup(keyboard)
         .await?;
 
     dialogue
         .update(State::Location {
             draft: updated_draft,
+            suggestions: top_locations,
             last_keyboard_msg_id: Some(sent.id.0),
         })
         .await?;
@@ -427,8 +505,7 @@ pub async fn handle_location_message(
     bot: Bot,
     msg: Message,
     dialogue: MyDialogue,
-    config: Arc<Config>,
-    (draft, last_msg_id): (DraftEntry, Option<i32>),
+    (draft, suggestions, last_msg_id): (DraftEntry, Vec<String>, Option<i32>),
 ) -> HandlerResult {
     clear_previous_keyboard(&bot, msg.chat.id, last_msg_id).await;
     let location_text = msg.text().unwrap_or("").trim().to_string();
@@ -445,12 +522,13 @@ pub async fn handle_location_message(
                 ),
             )
             .parse_mode(ParseMode::Html)
-            .reply_markup(get_location_keyboard(&config.location_presets))
+            .reply_markup(get_location_keyboard(&suggestions))
             .await?;
 
         dialogue
             .update(State::Location {
                 draft,
+                suggestions,
                 last_keyboard_msg_id: Some(sent.id.0),
             })
             .await?;
@@ -708,61 +786,79 @@ pub async fn handle_callback_query(
         draft.company = Some("Alleine".to_string());
         draft.partner_name = None;
 
-        bot.edit_message_text(
-            chat_id,
-            message_id,
-            get_location_prompt_text(&config.location_presets),
-        )
-        .reply_markup(get_location_keyboard(&config.location_presets))
-        .await?;
+        return edit_to_location_step(&bot, chat_id, message_id, &dialogue, &db, user_id, draft)
+            .await;
+    }
+
+    // 7. Location: Manual free-text entry requested
+    if data == LOCATION_MANUAL {
+        bot.answer_callback_query(q.id.clone()).await?;
+        let current_state = dialogue.get().await?.unwrap_or_default();
+        let draft = match current_state {
+            State::Location { draft, .. } => draft,
+            _ => DraftEntry {
+                r#type: "detailed".to_string(),
+                ..Default::default()
+            },
+        };
+
+        bot.edit_message_text(chat_id, message_id, get_location_prompt_text(&[]))
+            .reply_markup(get_location_keyboard(&[]))
+            .await?;
 
         dialogue
             .update(State::Location {
                 draft,
+                suggestions: Vec::new(),
                 last_keyboard_msg_id: Some(message_id.0),
             })
             .await?;
         return Ok(());
     }
 
-    // 7. Location preset selected
-    if let Some(idx_str) = data.strip_prefix(LOCATION_PREFIX) {
+    // 8. Location suggestion selected
+    if data.starts_with(LOCATION_PREFIX) {
         bot.answer_callback_query(q.id.clone()).await?;
-        if let Ok(idx) = idx_str.parse::<usize>() {
-            if let Some(preset_name) = config.location_presets.get(idx) {
-                let current_state = dialogue.get().await?.unwrap_or_default();
-                let mut draft = match current_state {
-                    State::Location { draft, .. } => draft,
-                    _ => DraftEntry {
-                        r#type: "detailed".to_string(),
-                        ..Default::default()
-                    },
-                };
+        let current_state = dialogue.get().await?.unwrap_or_default();
+        let (mut draft, suggestions) = match current_state {
+            State::Location {
+                draft,
+                suggestions,
+                ..
+            } => (draft, suggestions),
+            _ => (
+                DraftEntry {
+                    r#type: "detailed".to_string(),
+                    ..Default::default()
+                },
+                db.get_top_locations(user_id, TOP_SUGGESTIONS_LIMIT).await?,
+            ),
+        };
 
-                draft.location = Some(preset_name.clone());
+        if let Some(location_name) = resolve_suggestion_index(data, LOCATION_PREFIX, &suggestions) {
+            draft.location = Some(location_name);
 
-                bot.edit_message_text(
-                    chat_id,
-                    message_id,
-                    "⭐ Wie war die Qualität auf einer Skala von 1 bis 10 (10 = das Beste)?",
-                )
-                .reply_markup(get_quality_keyboard())
+            bot.edit_message_text(
+                chat_id,
+                message_id,
+                "⭐ Wie war die Qualität auf einer Skala von 1 bis 10 (10 = das Beste)?",
+            )
+            .reply_markup(get_quality_keyboard())
+            .await?;
+
+            dialogue
+                .update(State::Quality {
+                    draft,
+                    last_keyboard_msg_id: Some(message_id.0),
+                })
                 .await?;
-
-                dialogue
-                    .update(State::Quality {
-                        draft,
-                        last_keyboard_msg_id: Some(message_id.0),
-                    })
-                    .await?;
-            } else {
-                log::warn!("Location preset index {} out of bounds", idx);
-            }
+        } else {
+            log::warn!("Location suggestion callback out of bounds: {}", data);
         }
         return Ok(());
     }
 
-    // 8. Company: Partner
+    // 9. Company: Partner
     if data == COMPANY_PARTNER {
         bot.answer_callback_query(q.id.clone()).await?;
         let current_state = dialogue.get().await?.unwrap_or_default();
@@ -776,24 +872,88 @@ pub async fn handle_callback_query(
 
         draft.company = Some("Mit anderer Person".to_string());
 
-        bot.edit_message_text(
-            chat_id,
-            message_id,
-            "💬 Bitte gib den Namen der Person als Text ein:",
-        )
-        .reply_markup(get_partner_name_keyboard())
-        .await?;
+        let (top_partners, prompt, keyboard) = prepare_partner_step(&db, user_id).await?;
+
+        bot.edit_message_text(chat_id, message_id, prompt)
+            .reply_markup(keyboard)
+            .await?;
 
         dialogue
             .update(State::PartnerName {
                 draft,
+                suggestions: top_partners,
                 last_keyboard_msg_id: Some(message_id.0),
             })
             .await?;
         return Ok(());
     }
 
-    // 8. Quality Rating
+    // 10. Partner: Manual free-text entry requested
+    if data == PARTNER_MANUAL {
+        bot.answer_callback_query(q.id.clone()).await?;
+        let current_state = dialogue.get().await?.unwrap_or_default();
+        let draft = match current_state {
+            State::PartnerName { draft, .. } => draft,
+            _ => DraftEntry {
+                r#type: "detailed".to_string(),
+                company: Some("Mit anderer Person".to_string()),
+                ..Default::default()
+            },
+        };
+
+        bot.edit_message_text(chat_id, message_id, get_partner_name_prompt_text(&[]))
+            .reply_markup(get_partner_name_keyboard(&[]))
+            .await?;
+
+        dialogue
+            .update(State::PartnerName {
+                draft,
+                suggestions: Vec::new(),
+                last_keyboard_msg_id: Some(message_id.0),
+            })
+            .await?;
+        return Ok(());
+    }
+
+    // 11. Partner suggestion selected
+    if data.starts_with(PARTNER_PREFIX) {
+        bot.answer_callback_query(q.id.clone()).await?;
+        let current_state = dialogue.get().await?.unwrap_or_default();
+        let (mut draft, suggestions) = match current_state {
+            State::PartnerName {
+                draft,
+                suggestions,
+                ..
+            } => (draft, suggestions),
+            _ => (
+                DraftEntry {
+                    r#type: "detailed".to_string(),
+                    company: Some("Mit anderer Person".to_string()),
+                    ..Default::default()
+                },
+                db.get_top_partners(user_id, TOP_SUGGESTIONS_LIMIT).await?,
+            ),
+        };
+
+        if let Some(partner_name) = resolve_suggestion_index(data, PARTNER_PREFIX, &suggestions) {
+            draft.partner_name = Some(partner_name);
+            return edit_to_location_step(
+                &bot,
+                chat_id,
+                message_id,
+                &dialogue,
+                &db,
+                user_id,
+                draft,
+            )
+            .await;
+        } else {
+            log::warn!("Partner suggestion callback out of bounds: {}", data);
+        }
+        return Ok(());
+    }
+
+    // 12. Quality Rating
     if data.starts_with(QUALITY_PREFIX) {
         bot.answer_callback_query(q.id.clone()).await?;
         if let Ok(quality_val) = data[QUALITY_PREFIX.len()..].parse::<i64>() {

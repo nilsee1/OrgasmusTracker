@@ -79,12 +79,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .endpoint(handle_datetime_message),
         )
         .branch(
-            dptree::case![State::PartnerName { draft, last_keyboard_msg_id }]
-                .endpoint(handle_partner_name_message),
+            dptree::case![State::PartnerName {
+                draft,
+                suggestions,
+                last_keyboard_msg_id
+            }]
+            .endpoint(handle_partner_name_message),
         )
         .branch(
-            dptree::case![State::Location { draft, last_keyboard_msg_id }]
-                .endpoint(handle_location_message),
+            dptree::case![State::Location {
+                draft,
+                suggestions,
+                last_keyboard_msg_id
+            }]
+            .endpoint(handle_location_message),
         )
         .branch(
             dptree::case![State::Description { draft, last_keyboard_msg_id }]

@@ -13,6 +13,10 @@ pub const COMPANY_ALONE: &str = "COMPANY_ALONE";
 pub const COMPANY_PARTNER: &str = "COMPANY_PARTNER";
 
 pub const LOCATION_PREFIX: &str = "LOC_IDX_";
+pub const LOCATION_MANUAL: &str = "LOC_MANUAL";
+
+pub const PARTNER_PREFIX: &str = "PARTNER_IDX_";
+pub const PARTNER_MANUAL: &str = "PARTNER_MANUAL";
 
 pub const QUALITY_PREFIX: &str = "QUALITY_";
 
@@ -56,31 +60,32 @@ pub fn get_company_keyboard() -> InlineKeyboardMarkup {
     ])
 }
 
-pub fn get_partner_name_keyboard() -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![vec![
-        InlineKeyboardButton::callback("✅ Fertigstellen", ACTION_FINISH),
-        InlineKeyboardButton::callback("❌ Abbruch", ACTION_CANCEL),
-    ]])
-}
-
-pub fn get_location_keyboard(presets: &[String]) -> InlineKeyboardMarkup {
+fn build_suggestion_keyboard(
+    items: &[String],
+    prefix: &str,
+    manual_label: &str,
+    manual_callback: &str,
+) -> InlineKeyboardMarkup {
     let mut rows = Vec::new();
+    let capped = &items[..items.len().min(4)];
 
-    if !presets.is_empty() {
-        for (chunk_idx, chunk) in presets.chunks(2).enumerate() {
+    if !capped.is_empty() {
+        for (chunk_idx, chunk) in capped.chunks(2).enumerate() {
             let row = chunk
                 .iter()
                 .enumerate()
                 .map(|(in_chunk_idx, name)| {
                     let global_idx = chunk_idx * 2 + in_chunk_idx;
-                    InlineKeyboardButton::callback(
-                        name,
-                        format!("{}{}", LOCATION_PREFIX, global_idx),
-                    )
+                    InlineKeyboardButton::callback(name, format!("{}{}", prefix, global_idx))
                 })
                 .collect();
             rows.push(row);
         }
+
+        rows.push(vec![InlineKeyboardButton::callback(
+            manual_label,
+            manual_callback,
+        )]);
     }
 
     rows.push(vec![
@@ -89,6 +94,26 @@ pub fn get_location_keyboard(presets: &[String]) -> InlineKeyboardMarkup {
     ]);
 
     InlineKeyboardMarkup::new(rows)
+}
+
+/// Build the partner selection keyboard with up to 4 top partner suggestions and manual entry.
+pub fn get_partner_name_keyboard(partners: &[String]) -> InlineKeyboardMarkup {
+    build_suggestion_keyboard(
+        partners,
+        PARTNER_PREFIX,
+        "✏️ Neue Person eingeben",
+        PARTNER_MANUAL,
+    )
+}
+
+/// Build the location selection keyboard with up to 4 top location suggestions and manual entry.
+pub fn get_location_keyboard(locations: &[String]) -> InlineKeyboardMarkup {
+    build_suggestion_keyboard(
+        locations,
+        LOCATION_PREFIX,
+        "✏️ Neuen Ort eingeben",
+        LOCATION_MANUAL,
+    )
 }
 
 pub fn get_quality_keyboard() -> InlineKeyboardMarkup {
