@@ -13,6 +13,10 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && echo "" > src/lib.rs
 RUN cargo build --release && rm -rf src
 
+# Expose build commit SHA to the Rust compiler (placed after dependency cache)
+ARG GIT_HASH=unknown
+ENV GIT_HASH=${GIT_HASH}
+
 # Copy real source code and build production binary
 COPY src ./src
 RUN touch src/main.rs src/lib.rs && cargo build --release
@@ -20,6 +24,8 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 # Runtime stage
 FROM debian:12-slim
 
+ARG GIT_HASH=unknown
+ENV GIT_HASH=${GIT_HASH}
 ENV TZ=Europe/Berlin
 
 # Install security certificates and timezone data

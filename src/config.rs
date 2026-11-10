@@ -87,3 +87,35 @@ impl Config {
     }
 }
 
+/// Resolve the build/runtime commit SHA, preferring non-placeholder runtime
+/// environment variables (`IMAGE_SHA`, `GIT_HASH`) and falling back to the
+/// compile-time `GIT_HASH` or `"unknown"`.
+pub fn resolve_commit_sha(
+    compile_time_sha: Option<&str>,
+    runtime_git_hash: Option<&str>,
+    runtime_image_sha: Option<&str>,
+) -> String {
+    fn clean(val: Option<&str>) -> Option<&str> {
+        val.map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("unknown"))
+    }
+
+    clean(runtime_image_sha)
+        .or_else(|| clean(runtime_git_hash))
+        .or_else(|| clean(compile_time_sha))
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Resolve the application commit SHA from compile-time `GIT_HASH` and
+/// optional runtime environment variables (`GIT_HASH`, `IMAGE_SHA`).
+pub fn get_commit_sha(compile_time_sha: Option<&str>) -> String {
+    let runtime_git_hash = env::var("GIT_HASH").ok();
+    let runtime_image_sha = env::var("IMAGE_SHA").ok();
+    resolve_commit_sha(
+        compile_time_sha,
+        runtime_git_hash.as_deref(),
+        runtime_image_sha.as_deref(),
+    )
+}
+

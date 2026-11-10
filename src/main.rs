@@ -6,7 +6,7 @@ use teloxide::dispatching::UpdateFilterExt;
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ParseMode};
 
-use orgasmus_tracker::config::Config;
+use orgasmus_tracker::config::{get_commit_sha, Config};
 use orgasmus_tracker::database::Database;
 use orgasmus_tracker::handlers::{
     handle_callback_query, handle_command, handle_datetime_message,
@@ -16,8 +16,16 @@ use orgasmus_tracker::handlers::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = dotenvy::dotenv();
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
-    log::info!("Starte Orgasmus-Tracker Telegram Bot in Rust...");
+
+    let version = env!("CARGO_PKG_VERSION");
+    let commit_sha = get_commit_sha(option_env!("GIT_HASH"));
+    log::info!(
+        "Starting OrgasmusTracker v{} (SHA: {})",
+        version,
+        commit_sha
+    );
 
     let config = Arc::new(Config::from_env()?);
     let db = Arc::new(Database::connect_with_tz(&config.db_path, config.timezone).await?);

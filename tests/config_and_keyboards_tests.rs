@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Mutex;
-use orgasmus_tracker::config::Config;
+use orgasmus_tracker::config::{get_commit_sha, resolve_commit_sha, Config};
 use orgasmus_tracker::handlers::{get_location_prompt_text, get_partner_name_prompt_text};
 use orgasmus_tracker::keyboards::*;
 use orgasmus_tracker::models::{
@@ -268,5 +268,68 @@ fn test_keyboards_structure() {
     // Confirm dialog keyboard
     let confirm_kb = get_liste_delete_confirm_keyboard();
     assert_eq!(confirm_kb.inline_keyboard.len(), 2);
+}
+
+#[test]
+fn test_resolve_commit_sha_precedence_and_fallbacks() {
+    // Nothing provided -> "unknown"
+    assert_eq!(resolve_commit_sha(None, None, None), "unknown");
+    assert_eq!(
+        resolve_commit_sha(Some("unknown"), Some(""), Some("  ")),
+        "unknown"
+    );
+
+    // Compile-time SHA used when runtime env is unset or placeholder
+    assert_eq!(
+        resolve_commit_sha(Some("abc1234"), None, None),
+        "abc1234"
+    );
+    assert_eq!(
+        resolve_commit_sha(Some("abc1234"), Some("unknown"), None),
+        "abc1234"
+    );
+
+    // Runtime GIT_HASH overrides compile-time SHA
+    assert_eq!(
+        resolve_commit_sha(Some("abc1234"), Some("def5678"), None),
+        "def5678"
+    );
+
+    // Runtime IMAGE_SHA takes precedence even if Dockerfile baked GIT_HASH=unknown or compile-time SHA
+    assert_eq!(
+        resolve_commit_sha(Some("unknown"), Some("unknown"), Some("img9999")),
+        "img9999"
+    );
+    assert_eq!(
+        resolve_commit_sha(Some("abc1234"), Some("def5678"), Some("img9999")),
+        "img9999"
+    );
+}
+
+#[test]
+fn test_get_commit_sha_from_env() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    let prev_git_hash = std::env::var("GIT_HASH").ok();
+    let prev_image_sha = std::env::var("IMAGE_SHA").ok();
+
+    std::env::remove_var("GIT_HASH");
+    std::env::remove_var("IMAGE_SHA");
+    assert_eq!(get_commit_sha(None), "unknown");
+    assert_eq!(get_commit_sha(Some("compiled-sha")), "compiled-sha");
+
+    std::env::set_var("GIT_HASH", "runtime-git-sha");
+    assert_eq!(get_commit_sha(Some("compiled-sha")), "runtime-git-sha");
+
+    std::env::set_var("IMAGE_SHA", "runtime-image-sha");
+    assert_eq!(get_commit_sha(Some("compiled-sha")), "runtime-image-sha");
+
+    match prev_git_hash {
+        Some(v) => std::env::set_var("GIT_HASH", v),
+        None => std::env::remove_var("GIT_HASH"),
+    }
+    match prev_image_sha {
+        Some(v) => std::env::set_var("IMAGE_SHA", v),
+        None => std::env::remove_var("IMAGE_SHA"),
+    }
 }
 

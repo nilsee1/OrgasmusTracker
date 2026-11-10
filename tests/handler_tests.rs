@@ -1,8 +1,9 @@
 use chrono::{Duration, TimeZone, Utc};
 use orgasmus_tracker::database::Database;
 use orgasmus_tracker::handlers::{
-    get_location_prompt_text, get_partner_name_prompt_text, prepare_location_step,
-    prepare_partner_step, resolve_suggestion_index, Command, State, TOP_SUGGESTIONS_LIMIT,
+    format_user_log_fields, format_user_log_identifier, get_location_prompt_text,
+    get_partner_name_prompt_text, prepare_location_step, prepare_partner_step,
+    resolve_suggestion_index, Command, State, TOP_SUGGESTIONS_LIMIT,
 };
 use orgasmus_tracker::keyboards::{
     ACTION_CANCEL, ACTION_FINISH, LOCATION_MANUAL, LOCATION_PREFIX, PARTNER_MANUAL, PARTNER_PREFIX,
@@ -341,4 +342,55 @@ async fn test_dynamic_dialogue_state_transitions() {
     assert_eq!(quality_state.last_keyboard_msg_id(), Some(10));
     assert_eq!(draft.partner_name.as_deref(), Some("Julia"));
     assert_eq!(draft.location.as_deref(), Some("Zuhause"));
+}
+
+#[test]
+fn test_format_user_log_fields_and_identifier() {
+    // Prefer @username + ID
+    assert_eq!(
+        format_user_log_fields(Some("nils_bot"), Some("Nils"), 12345678),
+        "@nils_bot (ID: 12345678)"
+    );
+    // Strip leading @ if already present
+    assert_eq!(
+        format_user_log_fields(Some("@nils_bot"), Some("Nils"), 12345678),
+        "@nils_bot (ID: 12345678)"
+    );
+    // Fallback to first_name + ID when username is absent or blank
+    assert_eq!(
+        format_user_log_fields(None, Some("Nils"), 12345678),
+        "Nils (ID: 12345678)"
+    );
+    assert_eq!(
+        format_user_log_fields(Some("   "), Some("Nils"), 12345678),
+        "Nils (ID: 12345678)"
+    );
+    // Fallback to ID only when neither username nor first_name is set
+    assert_eq!(
+        format_user_log_fields(None, None, 12345678),
+        "ID: 12345678"
+    );
+    assert_eq!(
+        format_user_log_identifier(None, 987654),
+        "ID: 987654"
+    );
+
+    // Verify teloxide::types::User parsing with and without username
+    let user_with_username: teloxide::types::User = serde_json::from_str(
+        r#"{"id": 12345678, "is_bot": false, "first_name": "Nils", "username": "nils_dev"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        format_user_log_identifier(Some(&user_with_username), 12345678),
+        "@nils_dev (ID: 12345678)"
+    );
+
+    let user_without_username: teloxide::types::User = serde_json::from_str(
+        r#"{"id": 87654321, "is_bot": false, "first_name": "Max"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        format_user_log_identifier(Some(&user_without_username), 87654321),
+        "Max (ID: 87654321)"
+    );
 }

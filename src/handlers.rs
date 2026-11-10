@@ -317,32 +317,87 @@ pub async fn handle_command(
     Ok(())
 }
 
+/// Format raw user fields into a privacy-safe log identifier, preferring
+/// `@username`, falling back to `first_name`, and including the Telegram user ID.
+pub fn format_user_log_fields(
+    username: Option<&str>,
+    first_name: Option<&str>,
+    user_id: i64,
+) -> String {
+    if let Some(uname) = username.map(str::trim).filter(|s| !s.is_empty()) {
+        let clean = uname.trim_start_matches('@');
+        if !clean.is_empty() {
+            return format!("@{} (ID: {})", clean, user_id);
+        }
+    }
+
+    if let Some(fname) = first_name.map(str::trim).filter(|s| !s.is_empty()) {
+        return format!("{} (ID: {})", fname, user_id);
+    }
+
+    format!("ID: {}", user_id)
+}
+
+/// Format a Telegram user into a privacy-safe identifier for runtime event logs.
+pub fn format_user_log_identifier(user: Option<&teloxide::types::User>, user_id: i64) -> String {
+    match user {
+        Some(u) => format_user_log_fields(
+            u.username.as_deref(),
+            Some(u.first_name.as_str()),
+            u.id.0 as i64,
+        ),
+        None => format_user_log_fields(None, None, user_id),
+    }
+}
+
+/// Persist an entry (simple or detailed) to SQLite and emit a privacy-safe
+/// confirmation log without any entry payload details.
+async fn persist_entry_and_log(
+    db: &Database,
+    config: &Config,
+    user: Option<&teloxide::types::User>,
+    user_id: i64,
+    entry_type: &str,
+    draft: Option<&DraftEntry>,
+) -> Result<String, crate::database::DbError> {
+    let now = chrono::Utc::now().with_timezone(&config.timezone);
+    let default_ts = now.format("%Y-%m-%d %H:%M").to_string();
+    let timestamp = draft
+        .and_then(|d| d.timestamp.as_deref())
+        .unwrap_or(&default_ts)
+        .to_string();
+    let created_at = now.to_rfc3339();
+
+    db.add_entry(
+        user_id,
+        entry_type,
+        &timestamp,
+        draft.and_then(|d| d.company.as_deref()),
+        draft.and_then(|d| d.partner_name.as_deref()),
+        draft.and_then(|d| d.location.as_deref()),
+        draft.and_then(|d| d.quality),
+        draft.and_then(|d| d.description.as_deref()),
+        Some(&created_at),
+    )
+    .await?;
+
+    let user_identifier = format_user_log_identifier(user, user_id);
+    log::info!("New entry recorded for user {}", user_identifier);
+
+    Ok(timestamp)
+}
+
 /// Helper to persist draft entry to database and format summary.
 async fn persist_draft_and_send_summary(
     bot: &Bot,
     chat_id: ChatId,
+    user: Option<&teloxide::types::User>,
     user_id: i64,
     draft: &DraftEntry,
     config: &Config,
     db: &Database,
 ) -> HandlerResult {
-    let now = chrono::Utc::now().with_timezone(&config.timezone);
-    let default_ts = now.format("%Y-%m-%d %H:%M").to_string();
-    let timestamp = draft.timestamp.as_deref().unwrap_or(&default_ts);
-    let created_at = now.to_rfc3339();
-
-    db.add_entry(
-        user_id,
-        "detailed",
-        timestamp,
-        draft.company.as_deref(),
-        draft.partner_name.as_deref(),
-        draft.location.as_deref(),
-        draft.quality,
-        draft.description.as_deref(),
-        Some(&created_at),
-    )
-    .await?;
+    persist_entry_and_log(db, config, user, user_id, "detailed", Some(draft)).await?;
 
     let summary = format_detailed_summary(draft);
     bot.send_message(chat_id, summary)
@@ -597,8 +652,18 @@ pub async fn handle_description_message(
     let mut updated_draft = draft;
     updated_draft.description = Some(description);
 
-    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
-    persist_draft_and_send_summary(&bot, msg.chat.id, user_id, &updated_draft, &config, &db).await?;
+    let user = msg.from.as_ref();
+    let user_id = user.map(|u| u.id.0 as i64).unwrap_or(0);
+    persist_draft_and_send_summary(
+        &bot,
+        msg.chat.id,
+        user,
+        user_id,
+        &updated_draft,
+        &config,
+        &db,
+    )
+    .await?;
     dialogue.exit().await?;
 
     Ok(())
@@ -651,23 +716,8 @@ pub async fn handle_callback_query(
             },
         };
 
-        let now = chrono::Utc::now().with_timezone(&config.timezone);
-        let default_ts = now.format("%Y-%m-%d %H:%M").to_string();
-        let timestamp = draft.timestamp.as_deref().unwrap_or(&default_ts);
-        let created_at = now.to_rfc3339();
-
-        db.add_entry(
-            user_id,
-            "detailed",
-            timestamp,
-            draft.company.as_deref(),
-            draft.partner_name.as_deref(),
-            draft.location.as_deref(),
-            draft.quality,
-            draft.description.as_deref(),
-            Some(&created_at),
-        )
-        .await?;
+        persist_entry_and_log(&db, &config, Some(&q.from), user_id, "detailed", Some(&draft))
+            .await?;
 
         let summary = format_detailed_summary(&draft);
         dialogue.exit().await?;
@@ -680,22 +730,8 @@ pub async fn handle_callback_query(
     // 3. Choose Type: Simple
     if data == TYPE_SIMPLE {
         bot.answer_callback_query(q.id.clone()).await?;
-        let now = chrono::Utc::now().with_timezone(&config.timezone);
-        let timestamp = now.format("%Y-%m-%d %H:%M").to_string();
-        let created_at = now.to_rfc3339();
-
-        db.add_entry(
-            user_id,
-            "simple",
-            &timestamp,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(&created_at),
-        )
-        .await?;
+        let timestamp =
+            persist_entry_and_log(&db, &config, Some(&q.from), user_id, "simple", None).await?;
 
         dialogue.exit().await?;
         let text = format!(
