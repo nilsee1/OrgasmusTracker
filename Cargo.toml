@@ -1,6 +1,6 @@
 [package]
 name = "orgasmus-tracker"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["nils"]
 description = "Telegram bot for tracking personal logs with SQLite and Rust"
